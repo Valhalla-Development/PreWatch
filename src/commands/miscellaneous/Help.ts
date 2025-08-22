@@ -22,6 +22,7 @@ import { capitalise, deletableCheck, getCommandIds } from '../../utils/Util.js';
 // Map categories to their emojis
 const categoryEmojis: Record<string, string> = {
     miscellaneous: '🔧',
+    sub: '🔎',
 };
 
 /**
