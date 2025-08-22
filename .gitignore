@@ -29,3 +29,8 @@ build/
 
 node_modules/
 
+# ========================
+# Database file
+# ========================
+
+src/data/db.sqlite
