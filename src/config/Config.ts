@@ -19,10 +19,14 @@ const configSchema = z.object({
     API_URL: z.url('API_URL must be a valid URL'),
 
     // Maximum subscriptions per user (0 = unlimited)
-    MAX_SUBSCRIPTIONS_PER_USER: z.string().optional().default('5').transform((val) => {
-        const num = Number.parseInt(val, 10);
-        return Number.isNaN(num) ? 5 : num;
-    }),
+    MAX_SUBSCRIPTIONS_PER_USER: z
+        .string()
+        .optional()
+        .default('5')
+        .transform((val) => {
+            const num = Number.parseInt(val, 10);
+            return Number.isNaN(num) ? 5 : num;
+        }),
 
     // Environment (defaults to development)
     NODE_ENV: z.enum(['development', 'production']).default('development'),
