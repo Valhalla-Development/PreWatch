@@ -9,6 +9,7 @@ import {
 import type { Client } from 'discordx';
 import '@colors/colors';
 import KeyvSqlite from '@keyv/sqlite';
+import axios from 'axios';
 import Keyv from 'keyv';
 import { config } from '../config/Config.js';
 
@@ -167,5 +168,34 @@ export async function handleError(client: Client, error: unknown): Promise<void>
         await channel.send({ embeds: [embed] });
     } catch (sendError) {
         console.error('Failed to send the error embed:', sendError);
+    }
+}
+
+/**
+ * Checks the health of the API by hitting the /stats endpoint.
+ * @returns Promise resolving to true if API is healthy, false otherwise
+ */
+export async function checkApiHealth(): Promise<boolean> {
+    try {
+        const response = await axios.get(`${config.API_URL}/stats`);
+
+        // Check if response has expected structure and data
+        const isHealthy =
+            response.data.status === 'success' &&
+            response.data.data &&
+            typeof response.data.data.total === 'number' &&
+            response.data.data.total > 0;
+
+        if (isHealthy) {
+            const totalReleases = response.data.data.total.toLocaleString('en');
+            console.log(`${'>>'.green} [API STATUS] `.white + `API is healthy! Total releases: ${totalReleases}`.green);
+        } else {
+            console.warn(`${'>>'.yellow} [API STATUS] `.white + 'API health check failed: Invalid response structure or no data'.yellow);
+        }
+
+        return isHealthy;
+    } catch (error) {
+        console.error(`${'>>'.red} [API STATUS] `.white + `API health check failed: ${error}`.red);
+        return false;
     }
 }
