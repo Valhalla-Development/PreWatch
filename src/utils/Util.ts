@@ -288,3 +288,67 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
 
     return ws;
 }
+
+/**
+ * Deletes a subscription by subscription ID and handles cleanup
+ * @param userId - The user ID who owns the subscription
+ * @param subscriptionId - The specific subscription ID to delete
+ * @returns Promise resolving to deletion result
+ */
+export async function deleteSubscription(
+    userId: string,
+    subscriptionId: string
+): Promise<{
+    success: boolean;
+    message?: string;
+    deletedQuery?: string;
+}> {
+    try {
+        const userKey = `user:${userId}`;
+
+        // Get user's subscriptions
+        const userSubs: Array<{ id: string; query: string; created: number }> =
+            (await keyv.get(userKey)) || [];
+
+        // Find the subscription to delete
+        const subToDelete = userSubs.find((sub) => sub.id === subscriptionId);
+        if (!subToDelete) {
+            return { success: false, message: '❌ Subscription not found.' };
+        }
+
+        // Remove from user subscriptions
+        const updatedUserSubs = userSubs.filter((sub) => sub.id !== subscriptionId);
+
+        if (updatedUserSubs.length === 0) {
+            // No more subscriptions, delete user key entirely
+            await keyv.delete(userKey);
+        } else {
+            // Update user subscriptions
+            await keyv.set(userKey, updatedUserSubs);
+        }
+
+        // Handle query cleanup
+        const queryKey = `query:${subToDelete.query.toLowerCase().replace(/\s+/g, '+')}`;
+        const queryUsers: string[] = (await keyv.get(queryKey)) || [];
+
+        // Remove user from query subscribers
+        const updatedQueryUsers = queryUsers.filter((id) => id !== userId);
+
+        if (updatedQueryUsers.length === 0) {
+            // No more users monitoring this query, delete the query key entirely
+            await keyv.delete(queryKey);
+        } else {
+            // Update query subscribers
+            await keyv.set(queryKey, updatedQueryUsers);
+        }
+
+        return {
+            success: true,
+            deletedQuery: subToDelete.query,
+            message: `✅ Stopped monitoring "${subToDelete.query}"`,
+        };
+    } catch (error) {
+        console.error('Error deleting subscription:', error);
+        return { success: false, message: '❌ Failed to delete subscription. Try again later.' };
+    }
+}
