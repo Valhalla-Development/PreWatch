@@ -231,7 +231,7 @@ export async function checkApiHealth(): Promise<boolean> {
 }
 
 /**
- * Connects to the Predb.ovh WebSocket for real-time release updates.
+ * Connects to the WebSocket for real-time release updates.
  * @param onMessage - Callback function to handle incoming release data
  * @returns WebSocket connection instance
  */
@@ -246,8 +246,13 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
     ws.on('message', (data: WebSocket.Data) => {
         try {
             const release = JSON.parse(data.toString());
-            console.log(`${'>>'.blue} [WEBSOCKET] `.white + `Received ${release.action}: ${release.row?.name || 'Unknown'}`.blue);
-            onMessage(release);
+            
+            // Only process 'insert' actions
+            if (release.action === 'insert') {
+                console.log(`${'>>'.blue} [WEBSOCKET] `.white + `Received ${release.action}: ${release.row?.name || 'Unknown'}`.blue);
+                onMessage(release);
+            }
+            
         } catch (error) {
             console.error(`${'>>'.red} [WEBSOCKET] `.white + `Failed to parse message: ${error}`.red);
         }
