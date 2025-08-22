@@ -11,7 +11,7 @@ import {
 } from 'discord.js';
 import { ButtonComponent, Discord, Slash, SlashOption } from 'discordx';
 import { config } from '../../config/Config.js';
-import { deleteSubscription, keyv } from '../../utils/Util.js';
+import { addToGlobalQueries, deleteSubscription, keyv } from '../../utils/Util.js';
 
 type Subscription = {
     id: string;
@@ -53,6 +53,9 @@ export class Add {
             if (!queryUsers.includes(userId)) {
                 queryUsers.push(userId);
                 await keyv.set(queryKey, queryUsers);
+
+                // Add to global queries tracking for notifications
+                await addToGlobalQueries(query);
             }
 
             return { success: true, userSubs };
