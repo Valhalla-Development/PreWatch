@@ -11,7 +11,37 @@ import '@colors/colors';
 import KeyvSqlite from '@keyv/sqlite';
 import axios from 'axios';
 import Keyv from 'keyv';
+import WebSocket from 'ws';
 import { config } from '../config/Config.js';
+
+// API Response Types
+type Nuke = {
+    id: number;
+    typeId: number;
+    type: string;
+    preId: number;
+    reason: string;
+    net: string;
+    nukeAt: number;
+};
+
+type Release = {
+    id: number;
+    name: string;
+    team: string;
+    cat: string;
+    genre: string;
+    url: string;
+    size: number;
+    files: number;
+    preAt: number;
+    nuke: Nuke | null;
+};
+
+type WebSocketMessage = {
+    action: 'insert' | 'update' | 'delete' | 'nuke' | 'unnuke' | 'modnuke' | 'delpre' | 'undelpre';
+    row: Release;
+};
 
 const keyv = new Keyv({
     store: new KeyvSqlite({ uri: 'sqlite://src/data/db.sqlite' }),
@@ -198,4 +228,44 @@ export async function checkApiHealth(): Promise<boolean> {
         console.error(`${'>>'.red} [API STATUS] `.white + `API health check failed: ${error}`.red);
         return false;
     }
+}
+
+/**
+ * Connects to the Predb.ovh WebSocket for real-time release updates.
+ * @param onMessage - Callback function to handle incoming release data
+ * @returns WebSocket connection instance
+ */
+export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => void): WebSocket {
+    const wsUrl = `${config.API_URL}/ws`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.on('open', () => {
+        console.log(`${'>>'.green} [WEBSOCKET] `.white + 'Connected to real-time release stream'.green);
+    });
+
+    ws.on('message', (data: WebSocket.Data) => {
+        try {
+            const release = JSON.parse(data.toString());
+            console.log(`${'>>'.blue} [WEBSOCKET] `.white + `Received ${release.action}: ${release.row?.name || 'Unknown'}`.blue);
+            onMessage(release);
+        } catch (error) {
+            console.error(`${'>>'.red} [WEBSOCKET] `.white + `Failed to parse message: ${error}`.red);
+        }
+    });
+
+    ws.on('error', (error) => {
+        console.error(`${'>>'.red} [WEBSOCKET] `.white + `Connection error: ${error}`.red);
+    });
+
+    ws.on('close', (code, reason) => {
+        console.warn(`${'>>'.yellow} [WEBSOCKET] `.white + `Connection closed: ${code} - ${reason}`.yellow);
+        
+        // Auto-reconnect after 5 seconds
+        setTimeout(() => {
+            console.log(`${'>>'.cyan} [WEBSOCKET] `.white + 'Attempting to reconnect...'.cyan);
+            connectToReleaseStream(onMessage);
+        }, 5000);
+    });
+
+    return ws;
 }
