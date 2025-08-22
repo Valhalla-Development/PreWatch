@@ -43,9 +43,9 @@ type WebSocketMessage = {
     row: Release;
 };
 
-const keyv = new Keyv({
+export const keyv = new Keyv({
     store: new KeyvSqlite({ uri: 'sqlite://src/data/db.sqlite' }),
-    namespace: 'userData',
+    namespace: 'data',
 });
 keyv.on('error', (err) => console.log('[keyv] Connection Error', err));
 
@@ -218,9 +218,15 @@ export async function checkApiHealth(): Promise<boolean> {
 
         if (isHealthy) {
             const totalReleases = response.data.data.total.toLocaleString('en');
-            console.log(`${'>>'.green} [API STATUS] `.white + `API is healthy! Total releases: ${totalReleases}`.green);
+            console.log(
+                `${'>>'.green} [API STATUS] `.white +
+                    `API is healthy! Total releases: ${totalReleases}`.green
+            );
         } else {
-            console.warn(`${'>>'.yellow} [API STATUS] `.white + 'API health check failed: Invalid response structure or no data'.yellow);
+            console.warn(
+                `${'>>'.yellow} [API STATUS] `.white +
+                    'API health check failed: Invalid response structure or no data'.yellow
+            );
         }
 
         return isHealthy;
@@ -240,21 +246,27 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
     const ws = new WebSocket(wsUrl);
 
     ws.on('open', () => {
-        console.log(`${'>>'.green} [WEBSOCKET] `.white + 'Connected to real-time release stream'.green);
+        console.log(
+            `${'>>'.green} [WEBSOCKET] `.white + 'Connected to real-time release stream'.green
+        );
     });
 
     ws.on('message', (data: WebSocket.Data) => {
         try {
             const release = JSON.parse(data.toString());
-            
+
             // Only process 'insert' actions
             if (release.action === 'insert') {
-                console.log(`${'>>'.blue} [WEBSOCKET] `.white + `Received ${release.action}: ${release.row?.name || 'Unknown'}`.blue);
+                console.log(
+                    `${'>>'.blue} [WEBSOCKET] `.white +
+                        `Received ${release.action}: ${release.row?.name || 'Unknown'}`.blue
+                );
                 onMessage(release);
             }
-            
         } catch (error) {
-            console.error(`${'>>'.red} [WEBSOCKET] `.white + `Failed to parse message: ${error}`.red);
+            console.error(
+                `${'>>'.red} [WEBSOCKET] `.white + `Failed to parse message: ${error}`.red
+            );
         }
     });
 
@@ -263,8 +275,10 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
     });
 
     ws.on('close', (code, reason) => {
-        console.warn(`${'>>'.yellow} [WEBSOCKET] `.white + `Connection closed: ${code} - ${reason}`.yellow);
-        
+        console.warn(
+            `${'>>'.yellow} [WEBSOCKET] `.white + `Connection closed: ${code} - ${reason}`.yellow
+        );
+
         // Auto-reconnect after 5 seconds
         setTimeout(() => {
             console.log(`${'>>'.cyan} [WEBSOCKET] `.white + 'Attempting to reconnect...'.cyan);
