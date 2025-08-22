@@ -1,0 +1,31 @@
+# ========================
+# System generated files
+# ========================
+
+# macOS generated files
+.DS_Store
+
+# Environment variables
+.env
+
+# ========================
+# Build output
+# ========================
+
+# Build directory
+build/
+
+# ========================
+# IDEs and editors
+# ========================
+
+# JetBrains IDEs (e.g., WebStorm, IntelliJ)
+.idea/
+.vscode/
+
+# ========================
+# Dependency management
+# ========================
+
+node_modules/
+
