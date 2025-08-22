@@ -20,7 +20,8 @@ export class InteractionCreate {
             !(
                 interaction.isStringSelectMenu() ||
                 interaction.isChatInputCommand() ||
-                interaction.isContextMenuCommand()
+                interaction.isContextMenuCommand() ||
+                interaction.isButton()
             )
         ) {
             return;
