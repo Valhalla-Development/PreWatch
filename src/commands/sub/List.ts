@@ -39,11 +39,9 @@ export class List {
 
         const header = new TextDisplayBuilder().setContent(
             [
-                '## 📋 **Your Subscriptions**',
+                `## 📋 **Your Subscriptions (${subs.length})**`,
                 '',
-                totalPages > 1
-                    ? `> Page: ${clampedPage + 1}/${totalPages} • Total Subscriptions: ${subs.length}`
-                    : `> Total Subscriptions: ${subs.length}`,
+                totalPages > 1 ? `> Page: ${clampedPage + 1}/${totalPages}` : '',
             ].join('\n')
         );
 
