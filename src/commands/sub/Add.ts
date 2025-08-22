@@ -22,6 +22,84 @@ type Subscription = {
 @Discord()
 @Category('Sub')
 export class Add {
+    /**
+     * Helper function to create a subscription
+     */
+    private async createSubscription(data: {
+        query: string;
+        userId: string;
+        subscriptionId: string;
+        queryKey: string;
+        userKey: string;
+    }): Promise<{ success: boolean; message?: string; userSubs?: Subscription[] }> {
+        const { query, userId, subscriptionId, queryKey, userKey } = data;
+        try {
+            // Get existing user subscriptions
+            const userSubs: Subscription[] = (await keyv.get(userKey)) || [];
+
+            // Create new subscription
+            const newSub: Subscription = {
+                id: subscriptionId,
+                query,
+                created: Date.now(),
+            };
+
+            // Update user subscriptions
+            userSubs.push(newSub);
+            await keyv.set(userKey, userSubs);
+
+            // Update query subscriptions (for WebSocket lookups)
+            const queryUsers: string[] = (await keyv.get(queryKey)) || [];
+            if (!queryUsers.includes(userId)) {
+                queryUsers.push(userId);
+                await keyv.set(queryKey, queryUsers);
+            }
+
+            return { success: true, userSubs };
+        } catch (error) {
+            console.error('Error creating subscription:', error);
+            return { success: false, message: '❌ Failed to add subscription. Try again later.' };
+        }
+    }
+
+    /**
+     * Helper function to create success message components
+     */
+    private createSuccessMessage(
+        query: string,
+        userId: string,
+        subscriptionId: string,
+        userSubsLength: number
+    ): ContainerBuilder {
+        const countText =
+            config.MAX_SUBSCRIPTIONS_PER_USER === 0
+                ? 'Unlimited'
+                : `${userSubsLength}/${config.MAX_SUBSCRIPTIONS_PER_USER}`;
+
+        const text = new TextDisplayBuilder().setContent(
+            [
+                '## ✅ **Subscription Added**',
+                '',
+                `> 🔎 **Query:** ${query}`,
+                `> 👤 **User:** <@${userId}>`,
+                `> 📦 **Your total subs:** ${countText}`,
+            ].join('\n')
+        );
+
+        const listBtn = new ButtonBuilder()
+            .setCustomId('subs:list')
+            .setLabel('List My Subs')
+            .setStyle(ButtonStyle.Primary);
+
+        const undoBtn = new ButtonBuilder()
+            .setCustomId(`subs:undo:${subscriptionId}`)
+            .setLabel('Undo')
+            .setStyle(ButtonStyle.Secondary);
+
+        return new ContainerBuilder()
+            .addTextDisplayComponents(text)
+            .addActionRowComponents((row) => row.addComponents(listBtn, undoBtn));
+    }
     @Slash({ description: 'Add a query to monitor' })
     async add(
         @SlashOption({
@@ -78,8 +156,16 @@ export class Add {
                     ].join('\n')
                 );
 
+                // Store confirmation data temporarily with short ID
+                const confirmId = `${userId}-${Date.now()}`;
+                await keyv.set(
+                    `confirm:${confirmId}`,
+                    { query, userId, subscriptionId, queryKey, userKey },
+                    300_000
+                ); // 5 min TTL
+
                 const continueBtn = new ButtonBuilder()
-                    .setCustomId('subs:confirm')
+                    .setCustomId(`subs:confirm:${confirmId}`)
                     .setLabel('Yes')
                     .setStyle(ButtonStyle.Success);
 
@@ -110,53 +196,27 @@ export class Add {
                 return;
             }
 
-            // Create new subscription
-            const newSub: Subscription = {
-                id: subscriptionId,
+            // Create the subscription using helper function
+            const result = await this.createSubscription({
                 query,
-                created: Date.now(),
-            };
+                userId,
+                subscriptionId,
+                queryKey,
+                userKey,
+            });
 
-            // Update user subscriptions
-            userSubs.push(newSub);
-            await keyv.set(userKey, userSubs);
-
-            // Update query subscriptions (for WebSocket lookups)
-            const queryUsers: string[] = (await keyv.get(queryKey)) || [];
-            if (!queryUsers.includes(userId)) {
-                queryUsers.push(userId);
-                await keyv.set(queryKey, queryUsers);
+            if (!result.success) {
+                await interaction.editReply(result.message!);
+                return;
             }
 
-            // Fancy confirmation using components
-            const countText =
-                config.MAX_SUBSCRIPTIONS_PER_USER === 0
-                    ? 'Unlimited'
-                    : `${userSubs.length}/${config.MAX_SUBSCRIPTIONS_PER_USER}`;
-
-            const text = new TextDisplayBuilder().setContent(
-                [
-                    '## ✅ **Subscription Added**',
-                    '',
-                    `> 🔎 **Query:** \`${query}\``,
-                    `> 👤 **User:** ${interaction.user}`,
-                    `> 📦 **Your total subs:** ${countText}`,
-                ].join('\n')
+            // Create success message using helper function
+            const container = this.createSuccessMessage(
+                query,
+                userId,
+                subscriptionId,
+                result.userSubs!.length
             );
-
-            const listBtn = new ButtonBuilder()
-                .setCustomId('subs:list')
-                .setLabel('List My Subs')
-                .setStyle(ButtonStyle.Primary);
-
-            const undoBtn = new ButtonBuilder()
-                .setCustomId(`subs:undo:${subscriptionId}`)
-                .setLabel('Undo')
-                .setStyle(ButtonStyle.Secondary);
-
-            const container = new ContainerBuilder()
-                .addTextDisplayComponents(text)
-                .addActionRowComponents((row) => row.addComponents(listBtn, undoBtn));
 
             await interaction.editReply({
                 components: [container],
@@ -166,6 +226,66 @@ export class Add {
             console.error('Error adding subscription:', error);
             await interaction.editReply('❌ Failed to add subscription. Try again later.');
         }
+    }
+
+    @ButtonComponent({ id: /^subs:confirm:.+$/ })
+    async confirm(interaction: ButtonInteraction) {
+        const confirmId = interaction.customId.split(':')[2];
+
+        // Get stored confirmation data
+        const confirmData = await keyv.get(`confirm:${confirmId}`);
+        if (!confirmData) {
+            await interaction.update({
+                components: [
+                    new ContainerBuilder().addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(
+                            '❌ Confirmation expired. Please try again.'
+                        )
+                    ),
+                ],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
+
+        const { query, userId, subscriptionId, queryKey, userKey } = confirmData;
+
+        // Create the subscription using helper function
+        const result = await this.createSubscription({
+            query,
+            userId,
+            subscriptionId,
+            queryKey,
+            userKey,
+        });
+
+        if (!result.success) {
+            await interaction.update({
+                components: [
+                    new ContainerBuilder().addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(result.message!)
+                    ),
+                ],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
+
+        // Clean up confirmation data
+        await keyv.delete(`confirm:${confirmId}`);
+
+        // Create success message using helper function
+        const container = this.createSuccessMessage(
+            query,
+            userId,
+            subscriptionId,
+            result.userSubs!.length
+        );
+
+        await interaction.update({
+            components: [container],
+            flags: MessageFlags.IsComponentsV2,
+        });
     }
 
     @ButtonComponent({ id: 'subs:cancel' })
