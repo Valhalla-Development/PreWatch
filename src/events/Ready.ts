@@ -2,7 +2,7 @@ import { type Client, Discord, Once } from 'discordx';
 import si from 'systeminformation';
 import '@colors/colors';
 import { version } from 'discord.js';
-import { updateStatus } from '../utils/Util.js';
+import { checkApiHealth, updateStatus } from '../utils/Util.js';
 
 /**
  * Discord.js Ready event handler.
@@ -86,5 +86,8 @@ export class Ready {
 
         // Set activity
         updateStatus(client);
+
+        // Check API health
+        await checkApiHealth();
     }
 }
