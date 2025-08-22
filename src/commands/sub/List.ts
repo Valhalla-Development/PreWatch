@@ -150,57 +150,16 @@ export class List {
     async onRemove(interaction: ButtonInteraction): Promise<void> {
         const parts = interaction.customId.split(':');
         // ['subs','list','rm','<userId>','<subId>','<page>']
-        if (parts.length < 6) {
-            await interaction.update({
-                components: [
-                    new ContainerBuilder().addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent('❌ Invalid remove request.')
-                    ),
-                ],
-                flags: MessageFlags.IsComponentsV2,
-            });
-            return;
-        }
-
         const ownerId = parts[3]!;
         const subId = parts[4]!;
         const page = Number.parseInt(parts[5]!, 10) || 0;
 
-        // Ownership check via interaction user id and encoded owner id
         if (ownerId !== interaction.user.id) {
             await interaction.update({
                 components: [
                     new ContainerBuilder().addTextDisplayComponents(
                         new TextDisplayBuilder().setContent(
                             '❌ You can only remove your own subscriptions.'
-                        )
-                    ),
-                ],
-                flags: MessageFlags.IsComponentsV2,
-            });
-            return;
-        }
-
-        // Validate format
-        if (!subId.includes('-')) {
-            await interaction.update({
-                components: [
-                    new ContainerBuilder().addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent('❌ Malformed subscription ID.')
-                    ),
-                ],
-                flags: MessageFlags.IsComponentsV2,
-            });
-            return;
-        }
-
-        // Verify sub belongs to user (prefix userId-)
-        if (subId.split('-')[0] !== ownerId) {
-            await interaction.update({
-                components: [
-                    new ContainerBuilder().addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent(
-                            '❌ This subscription does not belong to you.'
                         )
                     ),
                 ],
@@ -223,6 +182,4 @@ export class List {
             ephemeral: true,
         });
     }
-
-    // 'Get' action removed per request; only inline 'Remove' remains
 }
