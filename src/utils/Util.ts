@@ -1,5 +1,7 @@
 import {
     ActivityType,
+    ButtonBuilder,
+    ButtonStyle,
     ChannelType,
     ContainerBuilder,
     codeBlock,
@@ -426,9 +428,7 @@ export async function processReleaseNotification(
             );
         }
     } catch (error) {
-        console.error(
-            `${'>>'.red} [NOTIFICATION] `.white + 'Error processing release'.red
-        );
+        console.error(`${'>>'.red} [NOTIFICATION] `.white + 'Error processing release'.red);
         await handleError(client, error);
     }
 }
@@ -487,6 +487,14 @@ export async function sendBatchedNotification(
             separator.setSpacing(SeparatorSpacingSize.Large)
         );
         container.addTextDisplayComponents(detailsText);
+
+        // Add unsubscribe button
+        const unsubButton = new ButtonBuilder()
+            .setCustomId(`unsub:${matchedQuery}`)
+            .setLabel('Unsubscribe')
+            .setStyle(ButtonStyle.Danger);
+
+        container.addActionRowComponents((row) => row.addComponents(unsubButton));
 
         if (config.NOTIFICATION_MODE === 'dm') {
             // Send individual DMs for each user
@@ -555,6 +563,16 @@ export async function sendBatchedNotification(
                 );
                 containerWithPings.addTextDisplayComponents(detailsText);
 
+                // Add unsubscribe button to channel version too
+                const unsubButtonChannel = new ButtonBuilder()
+                    .setCustomId(`unsub:${matchedQuery}`)
+                    .setLabel('Unsubscribe')
+                    .setStyle(ButtonStyle.Danger);
+
+                containerWithPings.addActionRowComponents((row) =>
+                    row.addComponents(unsubButtonChannel)
+                );
+
                 await (channel as TextChannel)
                     .send({
                         components: [containerWithPings],
@@ -618,6 +636,49 @@ export async function testNotification(client: Client, releaseName: string): Pro
 
     console.log(`🧪 [TEST] Simulating release: ${releaseName}`.cyan);
     await processReleaseNotification(client, mockRelease);
+}
+
+/**
+ * Unsubscribes a user from a specific query
+ * @param userId - The user ID to unsubscribe
+ * @param query - The query to unsubscribe from
+ * @returns Promise resolving to unsubscribe result
+ */
+export async function unsubscribeFromQuery(
+    userId: string,
+    query: string
+): Promise<{
+    success: boolean;
+    message?: string;
+}> {
+    try {
+        const userKey = `user:${userId}`;
+
+        // Get user's subscriptions
+        const userSubs: Array<{ id: string; query: string; created: number }> =
+            (await keyv.get(userKey)) || [];
+
+        // Find subscriptions matching this query
+        const matchingSubs = userSubs.filter((sub) => sub.query === query);
+        if (matchingSubs.length === 0) {
+            return { success: false, message: '❌ You are not subscribed to this query.' };
+        }
+
+        // Use the first matching subscription's ID to delete
+        const result = await deleteSubscription(userId, matchingSubs[0]!.id);
+
+        if (result.success) {
+            return {
+                success: true,
+                message: `✅ Unsubscribed from "${query}"`,
+            };
+        }
+
+        return result;
+    } catch (error) {
+        console.error('Error unsubscribing from query:', error);
+        return { success: false, message: '❌ Failed to unsubscribe. Try again later.' };
+    }
 }
 
 /**
