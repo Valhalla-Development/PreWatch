@@ -2,7 +2,7 @@ import { type Client, Discord, Once } from 'discordx';
 import si from 'systeminformation';
 import '@colors/colors';
 import { version } from 'discord.js';
-import { checkApiHealth, updateStatus } from '../utils/Util.js';
+import { checkApiHealth, connectToReleaseStream, updateStatus } from '../utils/Util.js';
 
 /**
  * Discord.js Ready event handler.
@@ -88,6 +88,13 @@ export class Ready {
         updateStatus(client);
 
         // Check API health
-        await checkApiHealth();
+        const isApiHealthy = await checkApiHealth();
+
+        // Connect to release stream if API is healthy
+        if (isApiHealthy) {
+            connectToReleaseStream((data) => {
+                console.log(data);
+            });
+        }
     }
 }
