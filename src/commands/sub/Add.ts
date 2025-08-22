@@ -1,5 +1,13 @@
 import { Category } from '@discordx/utilities';
-import { ApplicationCommandOptionType, type CommandInteraction } from 'discord.js';
+import {
+    ApplicationCommandOptionType,
+    ButtonBuilder,
+    ButtonStyle,
+    type CommandInteraction,
+    ContainerBuilder,
+    MessageFlags,
+    TextDisplayBuilder,
+} from 'discord.js';
 import { Discord, Slash, SlashOption } from 'discordx';
 import { config } from '../../config/Config.js';
 import { keyv } from '../../utils/Util.js';
@@ -72,9 +80,40 @@ export class Add {
                 await keyv.set(queryKey, queryUsers);
             }
 
-            await interaction.editReply(
-                `✅ Now monitoring: **${query}**\nYou'll be notified when new releases match this query.`
+            // Fancy confirmation using components
+            const countText =
+                config.MAX_SUBSCRIPTIONS_PER_USER === 0
+                    ? 'Unlimited'
+                    : `${userSubs.length}/${config.MAX_SUBSCRIPTIONS_PER_USER}`;
+
+            const text = new TextDisplayBuilder().setContent(
+                [
+                    '## ✅ **Subscription Added**',
+                    '',
+                    `> 🔎 **Query:** ${query}`,
+                    `> 👤 **User:** <@${userId}>`,
+                    `> 📦 **Your total subs:** ${countText}`,
+                ].join('\n')
             );
+
+            const listBtn = new ButtonBuilder()
+                .setCustomId('subs:list')
+                .setLabel('List My Subs')
+                .setStyle(ButtonStyle.Primary);
+
+            const undoBtn = new ButtonBuilder()
+                .setCustomId(`subs:undo:${subscriptionId}`)
+                .setLabel('Undo')
+                .setStyle(ButtonStyle.Secondary);
+
+            const container = new ContainerBuilder()
+                .addTextDisplayComponents(text)
+                .addActionRowComponents((row) => row.addComponents(listBtn, undoBtn));
+
+            await interaction.editReply({
+                components: [container],
+                flags: MessageFlags.IsComponentsV2,
+            });
         } catch (error) {
             console.error('Error adding subscription:', error);
             await interaction.editReply('❌ Failed to add subscription. Try again later.');
