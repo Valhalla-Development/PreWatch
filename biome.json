@@ -22,7 +22,9 @@
         "noNestedTernary": "off",
         "noMagicNumbers": "off"
       },
-      "nursery": {},
+      "nursery": {
+        "useMaxParams": "off"
+      },
       "complexity": {
         "noExcessiveCognitiveComplexity": "off"
       },
