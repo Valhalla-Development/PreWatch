@@ -15,6 +15,9 @@ const configSchema = z.object({
     // Required bot token
     BOT_TOKEN: z.string().min(1, 'Bot token is required'),
 
+    // Required API URL
+    API_URL: z.url('API_URL must be a valid URL'),
+
     // Environment (defaults to development)
     NODE_ENV: z.enum(['development', 'production']).default('development'),
 
@@ -45,11 +48,10 @@ try {
 } catch (error) {
     if (error instanceof z.ZodError) {
         const missingVars = error.issues
-            .filter((issue) => issue.code === 'too_small' || issue.code === 'invalid_type')
-            .map((issue) => issue.path[0])
+            .map((issue) => `${String(issue.path[0])}: ${issue.message}`)
             .join(', ');
 
-        throw new Error(`Missing required environment variables: ${missingVars}`);
+        throw new Error(`Configuration validation failed: ${missingVars}`);
     }
     throw error;
 }
