@@ -51,6 +51,53 @@ export class Add {
                 return;
             }
 
+            // Check for similar queries (partial matches)
+            const queryWords = query.toLowerCase().split(/\s+/);
+            const similarSubs = userSubs.filter((sub) => {
+                const subWords = sub.query.toLowerCase().split(/\s+/);
+                // Check if any word from the new query is in existing subscriptions
+                return queryWords.some(
+                    (word) =>
+                        word.length >= 3 &&
+                        subWords.some((subWord) => subWord.includes(word) || word.includes(subWord))
+                );
+            });
+
+            if (similarSubs.length > 0) {
+                const similarQueries = similarSubs.map((sub) => `"${sub.query}"`).join(', ');
+
+                const confirmText = new TextDisplayBuilder().setContent(
+                    [
+                        '## ⚠️ **Similar Subscription Found**',
+                        '',
+                        `> 🔎 **New query:** \`${query}\``,
+                        `> 📋 **Similar existing:** \`${similarQueries}\``,
+                        '',
+                        '> You already monitor similar search terms. Continue anyway?',
+                    ].join('\n')
+                );
+
+                const continueBtn = new ButtonBuilder()
+                    .setCustomId('subs:confirm')
+                    .setLabel('Yes')
+                    .setStyle(ButtonStyle.Success);
+
+                const cancelBtn = new ButtonBuilder()
+                    .setCustomId('subs:cancel')
+                    .setLabel('Cancel')
+                    .setStyle(ButtonStyle.Secondary);
+
+                const confirmContainer = new ContainerBuilder()
+                    .addTextDisplayComponents(confirmText)
+                    .addActionRowComponents((row) => row.addComponents(continueBtn, cancelBtn));
+
+                await interaction.editReply({
+                    components: [confirmContainer],
+                    flags: MessageFlags.IsComponentsV2,
+                });
+                return;
+            }
+
             // Check subscription limit (0 = unlimited)
             if (
                 config.MAX_SUBSCRIPTIONS_PER_USER !== 0 &&
@@ -90,8 +137,8 @@ export class Add {
                 [
                     '## ✅ **Subscription Added**',
                     '',
-                    `> 🔎 **Query:** ${query}`,
-                    `> 👤 **User:** <@${userId}>`,
+                    `> 🔎 **Query:** \`${query}\``,
+                    `> 👤 **User:** ${interaction.user}`,
                     `> 📦 **Your total subs:** ${countText}`,
                 ].join('\n')
             );
