@@ -2,13 +2,14 @@ import { Category } from '@discordx/utilities';
 import {
     ApplicationCommandOptionType,
     ButtonBuilder,
+    type ButtonInteraction,
     ButtonStyle,
     type CommandInteraction,
     ContainerBuilder,
     MessageFlags,
     TextDisplayBuilder,
 } from 'discord.js';
-import { Discord, Slash, SlashOption } from 'discordx';
+import { ButtonComponent, Discord, Slash, SlashOption } from 'discordx';
 import { config } from '../../config/Config.js';
 import { keyv } from '../../utils/Util.js';
 
@@ -165,5 +166,23 @@ export class Add {
             console.error('Error adding subscription:', error);
             await interaction.editReply('❌ Failed to add subscription. Try again later.');
         }
+    }
+
+    @ButtonComponent({ id: 'subs:cancel' })
+    async cancel(interaction: ButtonInteraction) {
+        const cancelText = new TextDisplayBuilder().setContent(
+            [
+                '## ❌ **Subscription Cancelled**',
+                '',
+                '> Operation was cancelled. No subscription was added.',
+            ].join('\n')
+        );
+
+        const cancelContainer = new ContainerBuilder().addTextDisplayComponents(cancelText);
+
+        await interaction.update({
+            components: [cancelContainer],
+            flags: MessageFlags.IsComponentsV2,
+        });
     }
 }
