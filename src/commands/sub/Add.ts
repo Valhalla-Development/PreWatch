@@ -11,7 +11,7 @@ import {
 } from 'discord.js';
 import { ButtonComponent, Discord, Slash, SlashOption } from 'discordx';
 import { config } from '../../config/Config.js';
-import { keyv } from '../../utils/Util.js';
+import { deleteSubscription, keyv } from '../../utils/Util.js';
 
 type Subscription = {
     id: string;
@@ -67,7 +67,7 @@ export class Add {
      */
     private createSuccessMessage(
         query: string,
-        userId: string,
+        _userId: string,
         subscriptionId: string,
         userSubsLength: number
     ): ContainerBuilder {
@@ -81,7 +81,6 @@ export class Add {
                 '## ✅ **Subscription Added**',
                 '',
                 `> 🔎 **Query:** ${query}`,
-                `> 👤 **User:** <@${userId}>`,
                 `> 📦 **Your total subs:** ${countText}`,
             ].join('\n')
         );
@@ -232,6 +231,35 @@ export class Add {
     async confirm(interaction: ButtonInteraction) {
         const confirmId = interaction.customId.split(':')[2];
 
+        // Validate confirm ID format
+        if (!confirmId?.includes('-')) {
+            await interaction.update({
+                components: [
+                    new ContainerBuilder().addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent('❌ Invalid confirmation ID.')
+                    ),
+                ],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
+
+        // Extract user ID from confirm ID to verify ownership
+        const confirmUserId = confirmId.split('-')[0];
+        if (confirmUserId !== interaction.user.id) {
+            await interaction.update({
+                components: [
+                    new ContainerBuilder().addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(
+                            '❌ You can only confirm your own subscriptions.'
+                        )
+                    ),
+                ],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
+
         // Get stored confirmation data
         const confirmData = await keyv.get(`confirm:${confirmId}`);
         if (!confirmData) {
@@ -286,6 +314,73 @@ export class Add {
             components: [container],
             flags: MessageFlags.IsComponentsV2,
         });
+    }
+
+    @ButtonComponent({ id: /^subs:undo:.+$/ })
+    async undo(interaction: ButtonInteraction) {
+        const subscriptionId = interaction.customId.split(':')[2];
+        const userId = interaction.user.id;
+
+        // Validate subscription ID format
+        if (!subscriptionId?.includes('-')) {
+            const errorText = new TextDisplayBuilder().setContent(
+                ['## ❌ **Invalid Request**', '', '> Malformed subscription ID.'].join('\n')
+            );
+            await interaction.update({
+                components: [new ContainerBuilder().addTextDisplayComponents(errorText)],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
+
+        // Extract user ID from subscription ID to verify ownership
+        const subscriptionUserId = subscriptionId.split('-')[0];
+        if (subscriptionUserId !== userId) {
+            const errorText = new TextDisplayBuilder().setContent(
+                ['## ❌ **Access Denied**', '', '> You can only undo your own subscriptions.'].join(
+                    '\n'
+                )
+            );
+            await interaction.update({
+                components: [new ContainerBuilder().addTextDisplayComponents(errorText)],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
+
+        // Delete the subscription using utility function
+        const result = await deleteSubscription(userId, subscriptionId);
+
+        if (result.success) {
+            const undoText = new TextDisplayBuilder().setContent(
+                [
+                    '## ↩️ **Subscription Removed**',
+                    '',
+                    `> 🔎 **Query:** ${result.deletedQuery}`,
+                    `> 👤 **User:** <@${userId}>`,
+                    '',
+                    '> Subscription has been successfully removed.',
+                ].join('\n')
+            );
+
+            const undoContainer = new ContainerBuilder().addTextDisplayComponents(undoText);
+
+            await interaction.update({
+                components: [undoContainer],
+                flags: MessageFlags.IsComponentsV2,
+            });
+        } else {
+            const errorText = new TextDisplayBuilder().setContent(
+                ['## ❌ **Undo Failed**', '', `> ${result.message}`].join('\n')
+            );
+
+            const errorContainer = new ContainerBuilder().addTextDisplayComponents(errorText);
+
+            await interaction.update({
+                components: [errorContainer],
+                flags: MessageFlags.IsComponentsV2,
+            });
+        }
     }
 
     @ButtonComponent({ id: 'subs:cancel' })
