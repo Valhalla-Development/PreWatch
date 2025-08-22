@@ -123,16 +123,38 @@ export class Add {
                 return;
             }
 
-            // Check for similar queries (partial matches)
-            const queryWords = query.toLowerCase().split(/\s+/);
+            // Check for similar queries
+            const normalizedQuery = query
+                .toLowerCase()
+                .replace(/[.\-_]/g, ' ')
+                .trim();
             const similarSubs = userSubs.filter((sub) => {
-                const subWords = sub.query.toLowerCase().split(/\s+/);
-                // Check if any word from the new query is in existing subscriptions
-                return queryWords.some(
-                    (word) =>
-                        word.length >= 3 &&
-                        subWords.some((subWord) => subWord.includes(word) || word.includes(subWord))
+                const normalizedSub = sub.query
+                    .toLowerCase()
+                    .replace(/[.\-_]/g, ' ')
+                    .trim();
+
+                // Check for substantial overlap
+                const queryWords = normalizedQuery.split(/\s+/).filter((w) => w.length >= 3);
+                const subWords = normalizedSub.split(/\s+/).filter((w) => w.length >= 3);
+
+                if (queryWords.length === 0 || subWords.length === 0) {
+                    return false;
+                }
+
+                const commonWords = queryWords.filter((word) =>
+                    subWords.some(
+                        (subWord) =>
+                            word === subWord ||
+                            (word.length >= 5 &&
+                                subWord.length >= 5 &&
+                                (word.includes(subWord) || subWord.includes(word)))
+                    )
                 );
+
+                const similarity =
+                    commonWords.length / Math.min(queryWords.length, subWords.length);
+                return similarity >= 0.6; // 60% similarity threshold
             });
 
             if (similarSubs.length > 0) {
@@ -150,8 +172,8 @@ export class Add {
                 );
 
                 // Build compact customId
-                const normalizedQuery = query.trim().toLowerCase();
-                const qEnc = encodeURIComponent(normalizedQuery);
+                const encodedQuery = query.trim().toLowerCase();
+                const qEnc = encodeURIComponent(encodedQuery);
                 const confirmId = `${userId}:${qEnc}`;
 
                 const continueBtn = new ButtonBuilder()
