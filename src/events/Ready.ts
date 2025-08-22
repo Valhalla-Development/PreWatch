@@ -14,7 +14,7 @@ export class Ready {
      * @param client - The Discord client.
      * @returns void
      */
-    @Once({ event: 'ready' })
+    @Once({ event: 'clientReady' })
     async onReady([client]: [Client]) {
         // Init slash commands
         await client.initApplicationCommands();
