@@ -1,8 +1,8 @@
-import { ChannelType, codeBlock, EmbedBuilder } from 'discord.js';
+import { ChannelType, codeBlock, EmbedBuilder, MessageFlags } from 'discord.js';
 import { type ArgsOf, type Client, Discord, On } from 'discordx';
 import moment from 'moment';
 import { config } from '../config/Config.js';
-import { handleError, reversedRainbow } from '../utils/Util.js';
+import { handleError, reversedRainbow, unsubscribeFromQuery } from '../utils/Util.js';
 
 @Discord()
 export class InteractionCreate {
@@ -28,6 +28,25 @@ export class InteractionCreate {
         }
 
         try {
+            // Handle unsubscribe button clicks
+            if (interaction.isButton() && interaction.customId.startsWith('unsub:')) {
+                const query = interaction.customId.replace('unsub:', '');
+                const userId = interaction.user.id;
+
+                await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+                const result = await unsubscribeFromQuery(userId, query);
+
+                await interaction.editReply({
+                    content:
+                        result.message ||
+                        (result.success
+                            ? '✅ Successfully unsubscribed!'
+                            : '❌ Failed to unsubscribe'),
+                });
+                return;
+            }
+
             await client.executeInteraction(interaction);
         } catch (err) {
             await handleError(client, err);
