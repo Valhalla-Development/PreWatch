@@ -41,6 +41,10 @@ const configSchema = z.object({
     ENABLE_LOGGING: z.string().optional().default('false').transform(stringToBoolean),
     ERROR_LOGGING_CHANNEL: z.string().optional(),
     COMMAND_LOGGING_CHANNEL: z.string().optional(),
+
+    // Notification settings
+    NOTIFICATION_MODE: z.enum(['dm', 'channel']).default('dm'),
+    NOTIFICATION_CHANNEL: z.string().optional(),
 });
 
 // Parse config with error handling
@@ -54,6 +58,13 @@ try {
             '⚠️  ENABLE_LOGGING is true but ERROR_LOGGING_CHANNEL and COMMAND_LOGGING_CHANNEL are missing. Logging will be disabled.'
         );
         config.ENABLE_LOGGING = false;
+    }
+
+    // Validate notification channel required when using channel mode
+    if (config.NOTIFICATION_MODE === 'channel' && !config.NOTIFICATION_CHANNEL) {
+        console.warn(
+            '⚠️  NOTIFICATION_MODE is set to "channel" but NOTIFICATION_CHANNEL is missing. Notifications will be disabled.'
+        );
     }
 } catch (error) {
     if (error instanceof z.ZodError) {
