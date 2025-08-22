@@ -84,11 +84,6 @@ export class Add {
             ].join('\n')
         );
 
-        const listBtn = new ButtonBuilder()
-            .setCustomId('subs:list')
-            .setLabel('List My Subs')
-            .setStyle(ButtonStyle.Primary);
-
         const undoBtn = new ButtonBuilder()
             .setCustomId(`subs:undo:${subscriptionId}`)
             .setLabel('Undo')
@@ -96,7 +91,7 @@ export class Add {
 
         return new ContainerBuilder()
             .addTextDisplayComponents(text)
-            .addActionRowComponents((row) => row.addComponents(listBtn, undoBtn));
+            .addActionRowComponents((row) => row.addComponents(undoBtn));
     }
     @Slash({ description: 'Add a query to monitor' })
     async add(
@@ -285,11 +280,7 @@ export class Add {
         }
 
         // Create success message using helper function
-        const container = this.createSuccessMessage(
-            query,
-            subscriptionId,
-            result.userSubs!.length
-        );
+        const container = this.createSuccessMessage(query, subscriptionId, result.userSubs!.length);
 
         await interaction.update({
             components: [container],
