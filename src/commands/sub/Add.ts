@@ -9,9 +9,9 @@ import {
     MessageFlags,
     TextDisplayBuilder,
 } from 'discord.js';
-import { ButtonComponent, Discord, Slash, SlashOption } from 'discordx';
+import { ButtonComponent, type Client, Discord, Slash, SlashOption } from 'discordx';
 import { config } from '../../config/Config.js';
-import { addToGlobalQueries, deleteSubscription, keyv } from '../../utils/Util.js';
+import { addToGlobalQueries, deleteSubscription, handleError, keyv } from '../../utils/Util.js';
 
 type Subscription = {
     id: string;
@@ -107,7 +107,8 @@ export class Add {
             maxLength: 50,
         })
         query: string,
-        interaction: CommandInteraction
+        interaction: CommandInteraction,
+        client: Client
     ) {
         await interaction.deferReply();
 
@@ -237,7 +238,8 @@ export class Add {
                 flags: MessageFlags.IsComponentsV2,
             });
         } catch (error) {
-            console.error('Error adding subscription:', error);
+            console.error('Error adding subscription');
+            await handleError(client, error);
             await interaction.editReply('❌ Failed to add subscription. Try again later.');
         }
     }
