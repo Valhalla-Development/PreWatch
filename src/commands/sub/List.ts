@@ -15,7 +15,7 @@ import { deleteSubscription, keyv } from '../../utils/Util.js';
 @Discord()
 @Category('Sub')
 export class List {
-    private static readonly PAGE_SIZE = 6;
+    private static readonly PAGE_SIZE: number = 6;
 
     private async fetchUserSubs(
         userId: string
