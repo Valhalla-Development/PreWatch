@@ -48,7 +48,7 @@ export class Add {
             userSubs.push(newSub);
             await keyv.set(userKey, userSubs);
 
-            // Update query subscriptions (for WebSocket lookups)
+            // Update query subscriptions
             const queryUsers: string[] = (await keyv.get(queryKey)) || [];
             if (!queryUsers.includes(userId)) {
                 queryUsers.push(userId);
@@ -67,7 +67,6 @@ export class Add {
      */
     private createSuccessMessage(
         query: string,
-        _userId: string,
         subscriptionId: string,
         userSubsLength: number
     ): ContainerBuilder {
@@ -155,13 +154,10 @@ export class Add {
                     ].join('\n')
                 );
 
-                // Store confirmation data temporarily with short ID
-                const confirmId = `${userId}-${Date.now()}`;
-                await keyv.set(
-                    `confirm:${confirmId}`,
-                    { query, userId, subscriptionId, queryKey, userKey },
-                    300_000
-                ); // 5 min TTL
+                // Build compact customId
+                const normalizedQuery = query.trim().toLowerCase();
+                const qEnc = encodeURIComponent(normalizedQuery);
+                const confirmId = `${userId}:${qEnc}`;
 
                 const continueBtn = new ButtonBuilder()
                     .setCustomId(`subs:confirm:${confirmId}`)
@@ -212,7 +208,6 @@ export class Add {
             // Create success message using helper function
             const container = this.createSuccessMessage(
                 query,
-                userId,
                 subscriptionId,
                 result.userSubs!.length
             );
@@ -229,14 +224,13 @@ export class Add {
 
     @ButtonComponent({ id: /^subs:confirm:.+$/ })
     async confirm(interaction: ButtonInteraction) {
-        const confirmId = interaction.customId.split(':')[2];
-
-        // Validate confirm ID format
-        if (!confirmId?.includes('-')) {
+        const parts = interaction.customId.split(':');
+        // Format: ['subs','confirm','<userId>','<qEnc>']
+        if (parts.length < 4) {
             await interaction.update({
                 components: [
                     new ContainerBuilder().addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent('❌ Invalid confirmation ID.')
+                        new TextDisplayBuilder().setContent('❌ Invalid confirmation data.')
                     ),
                 ],
                 flags: MessageFlags.IsComponentsV2,
@@ -244,9 +238,12 @@ export class Add {
             return;
         }
 
-        // Extract user ID from confirm ID to verify ownership
-        const confirmUserId = confirmId.split('-')[0];
-        if (confirmUserId !== interaction.user.id) {
+        const userId = parts[2]!;
+        const qEnc = parts.slice(3).join(':');
+        const normalizedQuery = decodeURIComponent(qEnc);
+
+        // Verify ownership
+        if (userId !== interaction.user.id) {
             await interaction.update({
                 components: [
                     new ContainerBuilder().addTextDisplayComponents(
@@ -260,23 +257,11 @@ export class Add {
             return;
         }
 
-        // Get stored confirmation data
-        const confirmData = await keyv.get(`confirm:${confirmId}`);
-        if (!confirmData) {
-            await interaction.update({
-                components: [
-                    new ContainerBuilder().addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent(
-                            '❌ Confirmation expired. Please try again.'
-                        )
-                    ),
-                ],
-                flags: MessageFlags.IsComponentsV2,
-            });
-            return;
-        }
-
-        const { query, userId, subscriptionId, queryKey, userKey } = confirmData;
+        // Reconstruct values
+        const query = normalizedQuery;
+        const subscriptionId = `${userId}-${Date.now()}`;
+        const queryKey = `query:${normalizedQuery.replace(/\s+/g, '+')}`;
+        const userKey = `user:${userId}`;
 
         // Create the subscription using helper function
         const result = await this.createSubscription({
@@ -299,13 +284,9 @@ export class Add {
             return;
         }
 
-        // Clean up confirmation data
-        await keyv.delete(`confirm:${confirmId}`);
-
         // Create success message using helper function
         const container = this.createSuccessMessage(
             query,
-            userId,
             subscriptionId,
             result.userSubs!.length
         );
