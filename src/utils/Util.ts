@@ -1,10 +1,14 @@
 import {
     ActivityType,
     ChannelType,
+    ContainerBuilder,
     codeBlock,
     EmbedBuilder,
     type Message,
+    MessageFlags,
+    SeparatorSpacingSize,
     type TextChannel,
+    TextDisplayBuilder,
 } from 'discord.js';
 import type { Client } from 'discordx';
 import '@colors/colors';
@@ -290,6 +294,332 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
 }
 
 /**
+ * Gets all active subscriptions from the database
+ * @returns Array of subscription objects with query and user arrays
+ */
+async function getAllActiveSubscriptions(): Promise<Array<{ query: string; users: string[] }>> {
+    // Since Keyv doesn't provide a direct way to get all keys, we'll use a workaround
+    // This is not the most efficient but works for the current setup
+    const subscriptions: Array<{ query: string; users: string[] }> = [];
+
+    // We maintain a list of all query keys separately
+    const allQueriesKey = 'meta:all_queries';
+    const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+
+    for (const query of allQueries) {
+        const queryKey = `query:${query.replace(/\s+/g, '+')}`;
+        const users = await keyv.get(queryKey);
+
+        if (users && Array.isArray(users) && users.length > 0) {
+            subscriptions.push({ query, users });
+        }
+    }
+
+    return subscriptions;
+}
+
+/**
+ * Checks if a query matches a release name using fuzzy matching
+ * @param query - The search query
+ * @param releaseName - The release name (already lowercased)
+ * @returns True if the query matches the release
+ */
+function isQueryMatch(query: string, releaseName: string): boolean {
+    // Normalize both query and release name
+    const normalizedQuery = query
+        .toLowerCase()
+        .replace(/[.\-_]/g, ' ')
+        .trim();
+    const normalizedRelease = releaseName.replace(/[.\-_]/g, ' ').trim();
+
+    // Split into words (filter out short words)
+    const queryWords = normalizedQuery.split(/\s+/).filter((word) => word.length >= 3);
+
+    if (queryWords.length === 0) {
+        return false;
+    }
+
+    // Check if all query words are present in the release name
+    return queryWords.every((word) => normalizedRelease.includes(word));
+}
+
+/**
+ * Adds a query to the global queries list for tracking
+ * @param query - The query to add
+ */
+export async function addToGlobalQueries(query: string): Promise<void> {
+    const allQueriesKey = 'meta:all_queries';
+    const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+
+    if (!allQueries.includes(query)) {
+        allQueries.push(query);
+        await keyv.set(allQueriesKey, allQueries);
+    }
+}
+
+/**
+ * Removes a query from the global queries list
+ * @param query - The query to remove
+ */
+export async function removeFromGlobalQueries(query: string): Promise<void> {
+    const allQueriesKey = 'meta:all_queries';
+    const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+
+    const updatedQueries = allQueries.filter((q) => q !== query);
+
+    if (updatedQueries.length === 0) {
+        await keyv.delete(allQueriesKey);
+    } else {
+        await keyv.set(allQueriesKey, updatedQueries);
+    }
+}
+
+/**
+ * Processes a new release and notifies users with matching subscriptions
+ * @param client - Discord client for sending notifications
+ * @param release - The release data from WebSocket
+ */
+export async function processReleaseNotification(
+    client: Client,
+    release: WebSocketMessage
+): Promise<void> {
+    if (release.action !== 'insert' || !release.row) {
+        return;
+    }
+
+    const releaseName = release.row.name.toLowerCase();
+
+    try {
+        // Get all active subscriptions and check for matches
+        const subscriptions = await getAllActiveSubscriptions();
+        const matchedQueries = new Set<string>();
+
+        const notificationBatches = new Map<string, Set<string>>();
+
+        for (const subscription of subscriptions) {
+            const { query, users } = subscription;
+
+            // Check if the query matches the release name
+            if (isQueryMatch(query, releaseName)) {
+                matchedQueries.add(query);
+
+                // Batch users by query for efficient notifications
+                if (!notificationBatches.has(query)) {
+                    notificationBatches.set(query, new Set());
+                }
+
+                for (const userId of users) {
+                    notificationBatches.get(query)!.add(userId);
+                }
+            }
+        }
+
+        // Send batched notifications
+        for (const [query, userIds] of notificationBatches) {
+            await sendBatchedNotification(client, Array.from(userIds), release.row, query);
+        }
+
+        if (matchedQueries.size > 0) {
+            console.log(
+                `${'>>'.green} [NOTIFICATION] `.white +
+                    `Found ${matchedQueries.size} matching queries for: ${release.row.name}`.green
+            );
+        }
+    } catch (error) {
+        console.error(
+            `${'>>'.red} [NOTIFICATION] `.white + `Error processing release: ${error}`.red
+        );
+    }
+}
+
+/**
+ * Sends a batched notification to multiple users about a matching release
+ * @param client - Discord client
+ * @param userIds - Array of user IDs to notify
+ * @param release - Release data
+ * @param matchedQuery - The query that matched
+ */
+export async function sendBatchedNotification(
+    client: Client,
+    userIds: string[],
+    release: Release,
+    matchedQuery: string
+): Promise<void> {
+    if (userIds.length === 0) {
+        return;
+    }
+
+    try {
+        const prettySize =
+            release.size > 0 ? `${(release.size / 1024 / 1024).toFixed(2)} MB` : 'Unknown';
+
+        const container = new ContainerBuilder();
+
+        // Main content as text displays (no sections to avoid validation issues)
+        const headerText = new TextDisplayBuilder().setContent(
+            ['# 🎯 New Release Match!', `-# Match: \`${matchedQuery}\``].join('\n')
+        );
+
+        const releaseText = new TextDisplayBuilder().setContent(
+            [
+                `## 📦 ${release.name}`,
+                `**Team:** \`${release.team}\``,
+                `**Category:** \`${release.cat}\``,
+            ].join('\n')
+        );
+
+        const detailsText = new TextDisplayBuilder().setContent(
+            [
+                '### Release Details',
+                `**Files:** \`${release.files}\``,
+                `**Size:** \`${prettySize}\``,
+                `**Pre Time:** <t:${release.preAt}:R>`,
+            ].join('\n')
+        );
+
+        container.addTextDisplayComponents(headerText);
+        container.addSeparatorComponents((separator) =>
+            separator.setSpacing(SeparatorSpacingSize.Large)
+        );
+        container.addTextDisplayComponents(releaseText);
+        container.addSeparatorComponents((separator) =>
+            separator.setSpacing(SeparatorSpacingSize.Large)
+        );
+        container.addTextDisplayComponents(detailsText);
+
+        if (config.NOTIFICATION_MODE === 'dm') {
+            // Send individual DMs for each user
+            for (const userId of userIds) {
+                const user = await client.users.fetch(userId).catch(() => null);
+                if (!user) {
+                    console.warn(
+                        `${'>>'.yellow} [NOTIFICATION] `.white + `User ${userId} not found`.yellow
+                    );
+                    continue;
+                }
+
+                await user
+                    .send({ components: [container], flags: MessageFlags.IsComponentsV2 })
+                    .catch(async (error: unknown) => {
+                        console.error(
+                            `${'>>'.red} [NOTIFICATION] `.white + `Failed to DM user ${userId}`.red
+                        );
+                        await handleError(client, error);
+                    });
+            }
+        } else if (config.NOTIFICATION_MODE === 'channel' && config.NOTIFICATION_CHANNEL) {
+            // Send via channel
+            console.log(
+                `${'>>'.cyan} [NOTIFICATION] `.white +
+                    `Looking for channel: ${config.NOTIFICATION_CHANNEL}`.cyan
+            );
+            const channel = client.channels.cache.get(config.NOTIFICATION_CHANNEL);
+
+            if (!channel) {
+                console.warn(
+                    `${'>>'.yellow} [NOTIFICATION] `.white +
+                        `Channel ${config.NOTIFICATION_CHANNEL} not found in cache`.yellow
+                );
+                return;
+            }
+
+            console.log(
+                `${'>>'.cyan} [NOTIFICATION] `.white +
+                    `Found channel: ${channel.id}, type: ${channel.type}, isTextBased: ${channel.isTextBased()}`
+                        .cyan
+            );
+
+            if (channel?.isTextBased() && 'send' in channel) {
+                // Add user pings to the header text instead of using content
+                const pings = userIds.map((id) => `<@${id}>`).join(' ');
+
+                // Rebuild container with pings in the header
+                const containerWithPings = new ContainerBuilder();
+
+                const headerWithPings = new TextDisplayBuilder().setContent(
+                    [
+                        '# 🎯 New Release Match!',
+                        `-# Query: \`${matchedQuery}\``,
+                        `-# ${pings}`,
+                    ].join('\n')
+                );
+
+                containerWithPings.addTextDisplayComponents(headerWithPings);
+                containerWithPings.addSeparatorComponents((separator) =>
+                    separator.setSpacing(SeparatorSpacingSize.Large)
+                );
+                containerWithPings.addTextDisplayComponents(releaseText);
+                containerWithPings.addSeparatorComponents((separator) =>
+                    separator.setSpacing(SeparatorSpacingSize.Large)
+                );
+                containerWithPings.addTextDisplayComponents(detailsText);
+
+                await (channel as TextChannel)
+                    .send({
+                        components: [containerWithPings],
+                        flags: MessageFlags.IsComponentsV2,
+                    })
+                    .then(() => {
+                        console.log(
+                            `${'>>'.green} [NOTIFICATION] `.white +
+                                `Successfully sent to channel ${channel.id} (${userIds.length} users)`
+                                    .green
+                        );
+                    })
+                    .catch(async (error: unknown) => {
+                        console.error(
+                            `${'>>'.red} [NOTIFICATION] `.white + 'Failed to send to channel'.red
+                        );
+                        await handleError(client, error);
+                    });
+            } else {
+                console.warn(
+                    `${'>>'.yellow} [NOTIFICATION] `.white +
+                        'Channel is not text-based or missing send method'.yellow
+                );
+            }
+        }
+
+        console.log(
+            `${'>>'.green} [NOTIFICATION] `.white +
+                `Notified ${userIds.length} users about: ${release.name} (query: ${matchedQuery})`
+                    .green
+        );
+    } catch (error) {
+        console.error(
+            `${'>>'.red} [NOTIFICATION] `.white + `Error sending batch notification: ${error}`.red
+        );
+        await handleError(client, error);
+    }
+}
+
+/**
+ * Simulates a release for testing notifications (call this from console or add a simple command)
+ * @param client - Discord client
+ * @param releaseName - Name of the fake release
+ */
+export async function testNotification(client: Client, releaseName: string): Promise<void> {
+    const mockRelease = {
+        action: 'insert' as const,
+        row: {
+            id: Math.floor(Math.random() * 10_000_000),
+            name: releaseName,
+            team: 'TEST',
+            cat: 'X264-HD-720P',
+            genre: '',
+            url: '',
+            size: 2048 * 1024 * 1024, // 2GB in bytes
+            files: 15,
+            preAt: Math.floor(Date.now() / 1000),
+            nuke: null,
+        },
+    };
+
+    console.log(`🧪 [TEST] Simulating release: ${releaseName}`.cyan);
+    await processReleaseNotification(client, mockRelease);
+}
+
+/**
  * Deletes a subscription by subscription ID and handles cleanup
  * @param userId - The user ID who owns the subscription
  * @param subscriptionId - The specific subscription ID to delete
@@ -337,6 +667,8 @@ export async function deleteSubscription(
         if (updatedQueryUsers.length === 0) {
             // No more users monitoring this query, delete the query key entirely
             await keyv.delete(queryKey);
+            // Remove from global queries tracking
+            await removeFromGlobalQueries(subToDelete.query);
         } else {
             // Update query subscribers
             await keyv.set(queryKey, updatedQueryUsers);
