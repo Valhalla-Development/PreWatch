@@ -427,8 +427,9 @@ export async function processReleaseNotification(
         }
     } catch (error) {
         console.error(
-            `${'>>'.red} [NOTIFICATION] `.white + `Error processing release: ${error}`.red
+            `${'>>'.red} [NOTIFICATION] `.white + 'Error processing release'.red
         );
+        await handleError(client, error);
     }
 }
 
