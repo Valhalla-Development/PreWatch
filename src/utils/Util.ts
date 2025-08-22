@@ -8,7 +8,15 @@ import {
 } from 'discord.js';
 import type { Client } from 'discordx';
 import '@colors/colors';
+import KeyvSqlite from '@keyv/sqlite';
+import Keyv from 'keyv';
 import { config } from '../config/Config.js';
+
+const keyv = new Keyv({
+    store: new KeyvSqlite({ uri: 'sqlite://src/data/db.sqlite' }),
+    namespace: 'userData',
+});
+keyv.on('error', (err) => console.log('[keyv] Connection Error', err));
 
 /**
  * Capitalises the first letter of each word in a string.
