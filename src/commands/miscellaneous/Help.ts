@@ -39,7 +39,10 @@ function getCategoriesAsOptions(): SelectMenuComponentOptionData[] {
     const uniqueCategories = Array.from(
         new Set(
             MetadataStorage.instance.applicationCommands
-                .filter((cmd: DApplicationCommand & ICategory) => cmd.category)
+                .filter(
+                    (cmd: DApplicationCommand & ICategory) =>
+                        cmd.category && cmd.category.toLowerCase() !== 'hidden'
+                )
                 .map((cmd: DApplicationCommand & ICategory) => cmd.category as string)
         )
     );
