@@ -454,7 +454,7 @@ export async function getAllActiveSubscriptions(): Promise<
     const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
 
     for (const query of allQueries) {
-        const queryKey = `query:${query.replace(/\s+/g, '+')}`;
+        const queryKey = `query:${query.toLowerCase().replace(/\s+/g, '+')}`;
         const users = await keyv.get(queryKey);
 
         if (users && Array.isArray(users) && users.length > 0) {
