@@ -74,16 +74,16 @@ export class Add {
         userSubsLength: number
     ): ContainerBuilder {
         const countText =
-            config.MAX_SUBSCRIPTIONS_PER_USER === 0
-                ? 'Unlimited'
-                : `${userSubsLength}/${config.MAX_SUBSCRIPTIONS_PER_USER}`;
+            config.MAX_SUBSCRIPTIONS_PER_USER !== 0
+                ? `${userSubsLength}/${config.MAX_SUBSCRIPTIONS_PER_USER}`
+                : false;
 
         const text = new TextDisplayBuilder().setContent(
             [
                 '## ✅ **Subscription Added**',
                 '',
                 `> 🔎 **Query:** ${query}`,
-                `> 📦 **Your total subs:** ${countText}`,
+                countText ? `> 📦 **Your total subs:** ${countText}` : '',
             ].join('\n')
         );
 
