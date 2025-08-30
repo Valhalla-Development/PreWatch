@@ -610,9 +610,6 @@ export async function sendBatchedNotification(
     }
 
     try {
-        const prettySize =
-            release.size > 0 ? `${release.size} MB` : 'Unknown';
-
         const container = new ContainerBuilder();
 
         // Main content as text displays (no sections to avoid validation issues)
@@ -631,10 +628,12 @@ export async function sendBatchedNotification(
         const detailsText = new TextDisplayBuilder().setContent(
             [
                 '### Release Details',
-                `**Files:** \`${release.files}\``,
-                `**Size:** \`${prettySize}\``,
+                release.files > 0 ? `**Files:** \`${release.files}\`` : null,
+                release.size > 0 ? `**Size:** \`${release.size} MB\`` : null,
                 `**Pre Time:** <t:${release.preAt}:R>`,
-            ].join('\n')
+            ]
+                .filter(Boolean)
+                .join('\n')
         );
 
         container.addTextDisplayComponents(headerText);
