@@ -176,7 +176,7 @@ export class Add {
                 );
 
                 // Build compact customId
-                const encodedQuery = query.trim().toLowerCase();
+                const encodedQuery = query.trim();
                 const qEnc = encodeURIComponent(encodedQuery);
                 const confirmId = `${userId}:${qEnc}`;
 
@@ -262,7 +262,7 @@ export class Add {
 
         const userId = parts[2]!;
         const qEnc = parts.slice(3).join(':');
-        const normalizedQuery = decodeURIComponent(qEnc);
+        const query = decodeURIComponent(qEnc);
 
         // Verify ownership
         if (userId !== interaction.user.id) {
@@ -280,9 +280,8 @@ export class Add {
         }
 
         // Reconstruct values
-        const query = normalizedQuery;
         const subscriptionId = `${userId}-${Date.now()}`;
-        const queryKey = `query:${normalizedQuery.replace(/\s+/g, '+')}`;
+        const queryKey = `query:${query.toLowerCase().replace(/\s+/g, '+')}`;
         const userKey = `user:${userId}`;
 
         // Create the subscription using helper function
