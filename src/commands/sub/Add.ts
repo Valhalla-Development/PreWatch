@@ -73,6 +73,13 @@ export class Add {
         subscriptionId: string,
         userSubsLength: number
     ): ContainerBuilder {
+        let notificationLocationText = '';
+        if (config.NOTIFICATION_MODE === 'channel' && config.NOTIFICATION_CHANNEL) {
+            notificationLocationText = `> 📍 **Alerts sent to:** <#${config.NOTIFICATION_CHANNEL}>`;
+        } else {
+            notificationLocationText = '> 📍 **Alerts sent to:** DM';
+        }
+
         const countText =
             config.MAX_SUBSCRIPTIONS_PER_USER !== 0
                 ? `${userSubsLength}/${config.MAX_SUBSCRIPTIONS_PER_USER}`
@@ -84,7 +91,10 @@ export class Add {
                 '',
                 `> 🔎 **Query:** ${query}`,
                 countText ? `> 📦 **Your total subs:** ${countText}` : '',
-            ].join('\n')
+                notificationLocationText,
+            ]
+                .filter(Boolean)
+                .join('\n')
         );
 
         const undoBtn = new ButtonBuilder()
