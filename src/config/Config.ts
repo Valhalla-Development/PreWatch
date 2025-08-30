@@ -45,6 +45,17 @@ const configSchema = z.object({
     // Notification settings
     NOTIFICATION_MODE: z.enum(['dm', 'channel']).default('dm'),
     NOTIFICATION_CHANNEL: z.string().optional(),
+
+    // Polling fallback settings
+    POLLING_ENABLED: z.string().optional().default('false').transform(stringToBoolean),
+    POLLING_INTERVAL_SECONDS: z
+        .string()
+        .optional()
+        .default('60')
+        .transform((val) => {
+            const num = Number.parseInt(val, 10);
+            return Number.isNaN(num) ? 60 : Math.max(10, num);
+        }),
 });
 
 // Parse config with error handling
@@ -78,4 +89,25 @@ try {
 }
 
 export { config };
+
 export const isDev = config.NODE_ENV === 'development';
+
+// Derived polling cap to ensure API safety (30 req/min)
+export const POLLING_MAX_PER_TICK = (() => {
+    const SAFE_REQUESTS_PER_MINUTE = 30;
+
+    if (!config.POLLING_ENABLED) {
+        return { maxPerTick: 0, intervalSeconds: 0 };
+    }
+
+    const baseInterval = config.POLLING_INTERVAL_SECONDS;
+
+    // Given a fixed API budget, compute how many queries we can safely poll per tick
+    // Budget per tick = SAFE_REQUESTS_PER_MINUTE * (baseInterval / 60)
+    const maxPerTick = Math.max(1, Math.floor((SAFE_REQUESTS_PER_MINUTE * baseInterval) / 60));
+
+    return {
+        maxPerTick,
+        intervalSeconds: baseInterval,
+    };
+})();
