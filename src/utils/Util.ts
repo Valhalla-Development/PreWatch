@@ -55,6 +55,28 @@ export const keyv = new Keyv({
 });
 keyv.on('error', (err) => console.log('[keyv] Connection Error', err));
 
+// ---------------------------
+// Last-seen tracking helpers
+// ---------------------------
+type LastSeen = { id?: number; preAt?: number };
+
+function getLastSeenKey(query: string): string {
+    const normalized = query.replace(/\s+/g, '+');
+    return `lastSeen:${normalized}`;
+}
+
+export async function getLastSeenForQuery(query: string): Promise<LastSeen> {
+    const key = getLastSeenKey(query);
+    const value = ((await keyv.get(key)) as LastSeen | undefined) || {};
+    return value;
+}
+
+export async function setLastSeenForQuery(query: string, release: Release): Promise<void> {
+    const key = getLastSeenKey(query);
+    const payload: LastSeen = { id: release.id, preAt: release.preAt };
+    await keyv.set(key, payload);
+}
+
 /**
  * Capitalises the first letter of each word in a string.
  * @param str - The string to be capitalised.
@@ -296,10 +318,133 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
 }
 
 /**
+ * Poll recent releases for each subscribed query as a fallback if websocket misses.
+ * Respects API rate limits via env-configured caps and intervals.
+ */
+export async function startPollingFallback(client: Client, signal?: AbortSignal): Promise<void> {
+    if (!config.POLLING_ENABLED) {
+        return;
+    }
+
+    const SAFE_REQUESTS_PER_MINUTE = 30;
+    let lastEffectiveIntervalSec = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const loop = async () => {
+        try {
+            const allQueriesKey = 'meta:all_queries';
+            const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+
+            // Compute interval that allows polling ALL queries each tick while respecting 30 rpm
+            const baseIntervalSec = config.POLLING_INTERVAL_SECONDS;
+            const requiredIntervalSec =
+                allQueries.length > 0
+                    ? Math.ceil((allQueries.length * 60) / SAFE_REQUESTS_PER_MINUTE)
+                    : baseIntervalSec;
+            const effectiveIntervalSec = Math.max(baseIntervalSec, requiredIntervalSec);
+
+            // Log when interval changes or on first run
+            if (effectiveIntervalSec !== lastEffectiveIntervalSec) {
+                const rpm =
+                    allQueries.length > 0
+                        ? ((allQueries.length * 60) / effectiveIntervalSec).toFixed(1)
+                        : '0.0';
+                console.log(
+                    `${'>>'.cyan} [POLL] `.white +
+                        `Interval set to ${effectiveIntervalSec}s for ${allQueries.length} queries (~${rpm} req/min)`
+                            .cyan
+                );
+                if (effectiveIntervalSec > baseIntervalSec) {
+                    console.warn(
+                        `${'>>'.yellow} [POLL] `.white +
+                            `Auto-scaled interval from ${baseIntervalSec}s to ${effectiveIntervalSec}s to respect API budget`
+                                .yellow
+                    );
+                }
+                lastEffectiveIntervalSec = effectiveIntervalSec;
+            }
+
+            if (allQueries.length === 0) {
+                // Schedule next check using base interval if no queries
+                timer = setTimeout(loop, baseIntervalSec * 1000);
+                return;
+            }
+
+            // Poll ALL queries this tick (interval has been scaled to fit budget)
+            // Track start to schedule next run accurately
+            const tickStartMs = Date.now();
+
+            // Pace requests to avoid burst rate-limits within the tick
+            const perRequestDelayMs = Math.ceil(60_000 / SAFE_REQUESTS_PER_MINUTE);
+            for (const query of allQueries) {
+                const url = `${config.API_URL}/?q=${encodeURIComponent(query)}&count=5`;
+
+                try {
+                    const resp = await axios.get(url);
+                    const rows = resp?.data?.data?.rows as Release[] | undefined;
+                    if (!rows || rows.length === 0) {
+                        continue;
+                    }
+
+                    const { preAt: lastPreAt } = await getLastSeenForQuery(query);
+                    const newRows = rows
+                        .filter((r) => (typeof lastPreAt === 'number' ? r.preAt > lastPreAt : true))
+                        .sort((a, b) => a.preAt - b.preAt);
+
+                    for (const row of newRows) {
+                        const wsLike: WebSocketMessage = { action: 'insert', row };
+                        await processReleaseNotification(client, wsLike);
+                        await setLastSeenForQuery(query, row);
+                    }
+                } catch (err) {
+                    console.warn(
+                        `${'>>'.yellow} [POLL] `.white +
+                            `Failed query for "${query}": ${err}`.yellow
+                    );
+                }
+
+                // Space out requests to stay under rolling 30 req/min budget
+                await new Promise((resolve) => setTimeout(resolve, perRequestDelayMs));
+            }
+
+            // Schedule next run considering time already spent in this tick
+            const elapsedMs = Date.now() - tickStartMs;
+            const targetTickMs = lastEffectiveIntervalSec * 1000;
+            const nextDelayMs = Math.max(0, targetTickMs - elapsedMs);
+
+            console.log(
+                `${'>>'.green} [POLL] `.white +
+                    `Completed ${allQueries.length} queries in ${(elapsedMs / 1000).toFixed(1)}s, next cycle in ${(nextDelayMs / 1000).toFixed(1)}s`
+                        .green
+            );
+
+            timer = setTimeout(loop, nextDelayMs);
+        } catch (error) {
+            console.error(`${'>>'.red} [POLL] `.white + `Loop error: ${error}`.red);
+            // In case of error, try again after base interval
+            timer = setTimeout(loop, config.POLLING_INTERVAL_SECONDS * 1000);
+        }
+    };
+
+    // Kick off polling
+    await loop();
+
+    if (signal) {
+        signal.addEventListener('abort', () => {
+            if (timer) {
+                clearTimeout(timer);
+            }
+        });
+    }
+}
+
+/**
  * Gets all active subscriptions from the database
  * @returns Array of subscription objects with query and user arrays
  */
-async function getAllActiveSubscriptions(): Promise<Array<{ query: string; users: string[] }>> {
+export async function getAllActiveSubscriptions(): Promise<
+    Array<{ query: string; users: string[] }>
+> {
     // Since Keyv doesn't provide a direct way to get all keys, we'll use a workaround
     // This is not the most efficient but works for the current setup
     const subscriptions: Array<{ query: string; users: string[] }> = [];
@@ -326,7 +471,7 @@ async function getAllActiveSubscriptions(): Promise<Array<{ query: string; users
  * @param releaseName - The release name (already lowercased)
  * @returns True if the query matches the release
  */
-function isQueryMatch(query: string, releaseName: string): boolean {
+export function isQueryMatch(query: string, releaseName: string): boolean {
     // Normalize both query and release name
     const normalizedQuery = query
         .toLowerCase()
@@ -403,15 +548,29 @@ export async function processReleaseNotification(
 
             // Check if the query matches the release name
             if (isQueryMatch(query, releaseName)) {
-                matchedQueries.add(query);
+                // Check if we've already seen this release for this query (deduplication)
+                const { preAt: lastPreAt } = await getLastSeenForQuery(query);
+                const isNewer =
+                    typeof lastPreAt === 'number' ? release.row.preAt > lastPreAt : true;
 
-                // Batch users by query for efficient notifications
-                if (!notificationBatches.has(query)) {
-                    notificationBatches.set(query, new Set());
-                }
+                if (isNewer) {
+                    matchedQueries.add(query);
+                    // Record last seen for this query to dedupe future polls
+                    await setLastSeenForQuery(query, release.row);
 
-                for (const userId of users) {
-                    notificationBatches.get(query)!.add(userId);
+                    // Batch users by query for efficient notifications
+                    if (!notificationBatches.has(query)) {
+                        notificationBatches.set(query, new Set());
+                    }
+
+                    for (const userId of users) {
+                        notificationBatches.get(query)!.add(userId);
+                    }
+                } else {
+                    console.log(
+                        `${'>>'.blue} [DEDUPE] `.white +
+                            `Skipping duplicate for query "${query}": ${release.row.name}`.blue
+                    );
                 }
             }
         }
@@ -621,7 +780,7 @@ export async function testNotification(client: Client, releaseName: string): Pro
     const mockRelease = {
         action: 'insert' as const,
         row: {
-            id: Math.floor(Math.random() * 10_000_000),
+            id: 999_999,
             name: releaseName,
             team: 'TEST',
             cat: 'X264-HD-720P',
@@ -629,7 +788,7 @@ export async function testNotification(client: Client, releaseName: string): Pro
             url: '',
             size: 2048 * 1024 * 1024, // 2GB in bytes
             files: 15,
-            preAt: Math.floor(Date.now() / 1000),
+            preAt: 1_703_123_456,
             nuke: null,
         },
     };
