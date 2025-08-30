@@ -13,17 +13,30 @@ export class InteractionCreate {
      */
     @On({ event: 'interactionCreate' })
     async onInteraction([interaction]: ArgsOf<'interactionCreate'>, client: Client) {
-        // Check if the interaction is in a guild and in a guild text channel, and is either a string select menu or a chat input command.
-        if (
-            !(interaction.guild && interaction.channel) ||
-            interaction.channel.type !== ChannelType.GuildText ||
-            !(
-                interaction.isStringSelectMenu() ||
-                interaction.isChatInputCommand() ||
-                interaction.isContextMenuCommand() ||
-                interaction.isButton()
-            )
-        ) {
+        // Check if the interaction is valid - allow both guild and DM interactions
+        if (!interaction.channelId) {
+            return;
+        }
+
+        const isValidInteraction =
+            interaction.isStringSelectMenu() ||
+            interaction.isChatInputCommand() ||
+            interaction.isContextMenuCommand() ||
+            interaction.isButton();
+
+        if (!isValidInteraction) {
+            return;
+        }
+
+        // Block DM commands if bot is guild-only
+        if (config.GUILDS && !interaction.guildId) {
+            if (interaction.isChatInputCommand()) {
+                await interaction.reply({
+                    content:
+                        '🚫 **This bot is configured for guild-only usage.** Please use commands in a server where the bot is installed.',
+                    flags: MessageFlags.Ephemeral,
+                });
+            }
             return;
         }
 
@@ -70,10 +83,14 @@ export class InteractionCreate {
             const executedCommand = interaction.toString();
 
             // Console logging
+            const guildInfo = interaction.guild
+                ? `${'Guild: '.brightBlue.bold}${interaction.guild.name.underline.brightMagenta.bold}`
+                : `${'DM'.brightBlue.bold}`;
+
             console.log(
                 `${'◆◆◆◆◆◆'.rainbow.bold} ${moment(now).format('MMM D, h:mm A')} ${reversedRainbow('◆◆◆◆◆◆')}\n` +
                     `${'🔧 Command:'.brightBlue.bold} ${executedCommand.brightYellow.bold}\n` +
-                    `${'🔍 Executor:'.brightBlue.bold} ${interaction.user.displayName.underline.brightMagenta.bold} ${'('.gray.bold}${'Guild: '.brightBlue.bold}${interaction.guild.name.underline.brightMagenta.bold}${')'}`
+                    `${'🔍 Executor:'.brightBlue.bold} ${interaction.user.displayName.underline.brightMagenta.bold} ${'('.gray.bold}${guildInfo}${')'}`
             );
 
             // Embed logging
