@@ -611,7 +611,7 @@ export async function sendBatchedNotification(
 
     try {
         const prettySize =
-            release.size > 0 ? `${(release.size / 1024 / 1024).toFixed(2)} MB` : 'Unknown';
+            release.size > 0 ? `${release.size} MB` : 'Unknown';
 
         const container = new ContainerBuilder();
 
@@ -786,7 +786,7 @@ export async function testNotification(client: Client, releaseName: string): Pro
             cat: 'X264-HD-720P',
             genre: '',
             url: '',
-            size: 2048 * 1024 * 1024, // 2GB in bytes
+            size: 2048,
             files: 15,
             preAt: 1_703_123_456,
             nuke: null,
