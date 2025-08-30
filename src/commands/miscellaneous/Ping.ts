@@ -68,10 +68,6 @@ export class Ping {
      */
     @Slash({ description: 'Display bot status and performance metrics.' })
     async ping(interaction: CommandInteraction, client: Client): Promise<void> {
-        if (!interaction.channel) {
-            return;
-        }
-
         const start = Date.now();
         await interaction.deferReply();
         const end = Date.now();

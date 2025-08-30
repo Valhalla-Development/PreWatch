@@ -256,10 +256,6 @@ export class Help {
      */
     @Slash({ description: 'Display list of commands.' })
     async help(interaction: CommandInteraction, client: Client) {
-        if (!interaction.channel) {
-            return;
-        }
-
         const selectMenu = this.createSelectMenu();
         await handleHelp(interaction, client, selectMenu);
     }
