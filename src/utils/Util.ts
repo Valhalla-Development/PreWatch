@@ -60,8 +60,12 @@ keyv.on('error', (err) => console.log('[keyv] Connection Error', err));
 // ---------------------------
 type LastSeen = { id?: number; preAt?: number };
 
+function normalizeQueryStorageKey(query: string): string {
+    return query.toLowerCase().replace(/\s+/g, '+').trim();
+}
+
 function getLastSeenKey(query: string): string {
-    const normalized = query.replace(/\s+/g, '+');
+    const normalized = normalizeQueryStorageKey(query);
     return `lastSeen:${normalized}`;
 }
 
