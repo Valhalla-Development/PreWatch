@@ -67,19 +67,23 @@ function normalizeQueryStorageKey(query: string): string {
     return query.toLowerCase().replace(/\s+/g, '+').trim();
 }
 
-function getLastSeenKey(query: string): string {
+function getLastSeenKey(guildId: string, query: string): string {
     const normalized = normalizeQueryStorageKey(query);
-    return `lastSeen:${normalized}`;
+    return `lastSeen:${guildId}:${normalized}`;
 }
 
-export async function getLastSeenForQuery(query: string): Promise<LastSeen> {
-    const key = getLastSeenKey(query);
+export async function getLastSeenForGuildQuery(guildId: string, query: string): Promise<LastSeen> {
+    const key = getLastSeenKey(guildId, query);
     const value = ((await keyv.get(key)) as LastSeen | undefined) || {};
     return value;
 }
 
-export async function setLastSeenForQuery(query: string, release: Release): Promise<void> {
-    const key = getLastSeenKey(query);
+export async function setLastSeenForGuildQuery(
+    guildId: string,
+    query: string,
+    release: Release
+): Promise<void> {
+    const key = getLastSeenKey(guildId, query);
     const payload: LastSeen = { id: release.id, preAt: release.preAt };
     await keyv.set(key, payload);
 }
@@ -359,8 +363,20 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
 
     const loop = async () => {
         try {
-            const allQueriesKey = 'meta:all_queries';
-            const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+            // Only poll queries from guilds that currently have an alerts channel configured.
+            const uniqueQueries = new Set<string>();
+            for (const [guildId] of client.guilds.cache) {
+                const channelId = await getAlertsChannelForGuild(guildId);
+                if (!channelId) {
+                    continue;
+                }
+                const allQueriesKey = `meta:all_queries:${guildId}`;
+                const guildQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+                for (const query of guildQueries) {
+                    uniqueQueries.add(query);
+                }
+            }
+            const allQueries = Array.from(uniqueQueries);
 
             // Compute interval that allows polling ALL queries each tick while respecting 30 rpm
             const baseIntervalSec = config.POLLING_INTERVAL_SECONDS;
@@ -397,7 +413,7 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
                 return;
             }
 
-            // Poll ALL queries this tick (interval has been scaled to fit budget)
+            // Poll ALL eligible queries this tick (interval has been scaled to fit budget)
             // Track start to schedule next run accurately
             const tickStartMs = Date.now();
 
@@ -413,15 +429,10 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
                         continue;
                     }
 
-                    const { preAt: lastPreAt } = await getLastSeenForQuery(query);
-                    const newRows = rows
-                        .filter((r) => (typeof lastPreAt === 'number' ? r.preAt > lastPreAt : true))
-                        .sort((a, b) => a.preAt - b.preAt);
-
-                    for (const row of newRows) {
+                    const sortedRows = [...rows].sort((a, b) => a.preAt - b.preAt);
+                    for (const row of sortedRows) {
                         const wsLike: WebSocketMessage = { action: 'insert', row };
                         await processReleaseNotification(client, wsLike);
-                        await setLastSeenForQuery(query, row);
                     }
                 } catch (err) {
                     console.warn(
@@ -469,23 +480,31 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
  * Gets all active subscriptions from the database
  * @returns Array of subscription objects with query and user arrays
  */
-export async function getAllActiveSubscriptions(): Promise<
-    Array<{ query: string; users: string[] }>
-> {
-    // Since Keyv doesn't provide a direct way to get all keys, we'll use a workaround
-    // This is not the most efficient but works for the current setup
-    const subscriptions: Array<{ query: string; users: string[] }> = [];
+export async function getAllActiveSubscriptions(
+    client: Client
+): Promise<Array<{ guildId: string; channelId: string; query: string; users: string[] }>> {
+    const subscriptions: Array<{
+        guildId: string;
+        channelId: string;
+        query: string;
+        users: string[];
+    }> = [];
 
-    // We maintain a list of all query keys separately
-    const allQueriesKey = 'meta:all_queries';
-    const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+    for (const [guildId] of client.guilds.cache) {
+        const channelId = await getAlertsChannelForGuild(guildId);
+        if (!channelId) {
+            continue;
+        }
 
-    for (const query of allQueries) {
-        const queryKey = `query:${query.toLowerCase().replace(/\s+/g, '+')}`;
-        const users = await keyv.get(queryKey);
+        const allQueriesKey = `meta:all_queries:${guildId}`;
+        const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+        for (const query of allQueries) {
+            const queryKey = `query:${guildId}:${normalizeQueryStorageKey(query)}`;
+            const users = await keyv.get(queryKey);
 
-        if (users && Array.isArray(users) && users.length > 0) {
-            subscriptions.push({ query, users });
+            if (users && Array.isArray(users) && users.length > 0) {
+                subscriptions.push({ guildId, channelId, query, users });
+            }
         }
     }
 
@@ -521,8 +540,8 @@ export function isQueryMatch(query: string, releaseName: string): boolean {
  * Adds a query to the global queries list for tracking
  * @param query - The query to add
  */
-export async function addToGlobalQueries(query: string): Promise<void> {
-    const allQueriesKey = 'meta:all_queries';
+export async function addToGlobalQueries(guildId: string, query: string): Promise<void> {
+    const allQueriesKey = `meta:all_queries:${guildId}`;
     const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
 
     if (!allQueries.includes(query)) {
@@ -535,8 +554,8 @@ export async function addToGlobalQueries(query: string): Promise<void> {
  * Removes a query from the global queries list
  * @param query - The query to remove
  */
-export async function removeFromGlobalQueries(query: string): Promise<void> {
-    const allQueriesKey = 'meta:all_queries';
+export async function removeFromGlobalQueries(guildId: string, query: string): Promise<void> {
+    const allQueriesKey = `meta:all_queries:${guildId}`;
     const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
 
     const updatedQueries = allQueries.filter((q) => q !== query);
@@ -565,36 +584,36 @@ export async function processReleaseNotification(
 
     try {
         // Get all active subscriptions and check for matches
-        const subscriptions = await getAllActiveSubscriptions();
+        const subscriptions = await getAllActiveSubscriptions(client);
         const matchedQueries = new Set<string>();
-
         const notificationBatches = new Map<string, Set<string>>();
 
         const isTestRelease = release.row.id === 999_999;
 
         for (const subscription of subscriptions) {
-            const { query, users } = subscription;
+            const { guildId, channelId, query, users } = subscription;
 
             // Check if the query matches the release name
             if (isQueryMatch(query, releaseName)) {
                 const shouldNotify = isTestRelease
                     ? true
-                    : await getLastSeenForQuery(query).then(({ preAt: lastPreAt }) =>
+                    : await getLastSeenForGuildQuery(guildId, query).then(({ preAt: lastPreAt }) =>
                           typeof lastPreAt === 'number' ? release.row.preAt > lastPreAt : true
                       );
 
                 if (shouldNotify) {
-                    matchedQueries.add(query);
+                    matchedQueries.add(`${guildId}:${query}`);
                     if (!isTestRelease) {
-                        await setLastSeenForQuery(query, release.row);
+                        await setLastSeenForGuildQuery(guildId, query, release.row);
                     }
 
-                    if (!notificationBatches.has(query)) {
-                        notificationBatches.set(query, new Set());
+                    const batchKey = `${channelId}:${query}`;
+                    if (!notificationBatches.has(batchKey)) {
+                        notificationBatches.set(batchKey, new Set());
                     }
 
                     for (const userId of users) {
-                        notificationBatches.get(query)!.add(userId);
+                        notificationBatches.get(batchKey)!.add(userId);
                     }
                 } else {
                     console.log(
@@ -606,8 +625,20 @@ export async function processReleaseNotification(
         }
 
         // Send batched notifications
-        for (const [query, userIds] of notificationBatches) {
-            await sendBatchedNotification(client, Array.from(userIds), release.row, query);
+        for (const [batchKey, userIds] of notificationBatches) {
+            const separator = batchKey.indexOf(':');
+            if (separator === -1) {
+                continue;
+            }
+            const channelId = batchKey.slice(0, separator);
+            const query = batchKey.slice(separator + 1);
+            await sendBatchedNotification(
+                client,
+                channelId,
+                Array.from(userIds),
+                release.row,
+                query
+            );
         }
 
         if (matchedQueries.size > 0) {
@@ -631,6 +662,7 @@ export async function processReleaseNotification(
  */
 export async function sendBatchedNotification(
     client: Client,
+    channelId: string,
     userIds: string[],
     release: Release,
     matchedQuery: string
@@ -659,72 +691,54 @@ export async function sendBatchedNotification(
                 .join('\n')
         );
 
-        // Build channelId -> set of user IDs to ping (users in guilds that use this channel).
-        const channelToUserIds = new Map<string, Set<string>>();
-        for (const [guildId] of client.guilds.cache) {
-            const channelId = await getAlertsChannelForGuild(guildId);
-            if (!channelId) {
-                continue;
-            }
-            if (!channelToUserIds.has(channelId)) {
-                channelToUserIds.set(channelId, new Set());
-            }
-            for (const id of userIds) {
-                channelToUserIds.get(channelId)!.add(id);
-            }
+        const channel =
+            client.channels.cache.get(channelId) ??
+            (await client.channels.fetch(channelId).catch(() => null));
+        const canSendToChannel = channel?.isTextBased() && channel && 'send' in channel;
+        if (!canSendToChannel) {
+            return;
         }
-        for (const [channelId, userIdSet] of channelToUserIds) {
-            const channel =
-                client.channels.cache.get(channelId) ??
-                (await client.channels.fetch(channelId).catch(() => null));
-            const canSendToChannel = channel?.isTextBased() && channel && 'send' in channel;
-            if (!canSendToChannel) {
-                continue;
-            }
-            const userIdsToPing = Array.from(userIdSet);
-            const pings = userIdsToPing.map((id) => `<@${id}>`).join(' ');
-            const containerWithPings = new ContainerBuilder();
-            const headerWithPings = new TextDisplayBuilder().setContent(
-                ['# 🎯 New Release Match!', `-# Query: \`${matchedQuery}\``, `-# ${pings}`].join(
-                    '\n'
-                )
-            );
-            containerWithPings.addTextDisplayComponents(headerWithPings);
-            containerWithPings.addSeparatorComponents((separator) =>
-                separator.setSpacing(SeparatorSpacingSize.Large)
-            );
-            containerWithPings.addTextDisplayComponents(releaseText);
-            containerWithPings.addSeparatorComponents((separator) =>
-                separator.setSpacing(SeparatorSpacingSize.Large)
-            );
-            containerWithPings.addTextDisplayComponents(detailsText);
-            const unsubButtonChannel = new ButtonBuilder()
-                .setCustomId(`unsub:${matchedQuery}`)
-                .setLabel('Unsubscribe')
-                .setStyle(ButtonStyle.Danger);
-            containerWithPings.addActionRowComponents((row) =>
-                row.addComponents(unsubButtonChannel)
-            );
+        const userIdsToPing = Array.from(new Set(userIds));
+        const pings = userIdsToPing.map((id) => `<@${id}>`).join(' ');
+        const containerWithPings = new ContainerBuilder();
+        const headerWithPings = new TextDisplayBuilder().setContent(
+            ['# 🎯 New Release Match!', `-# Query: \`${matchedQuery}\``, `-# ${pings}`].join('\n')
+        );
+        containerWithPings.addTextDisplayComponents(headerWithPings);
+        containerWithPings.addSeparatorComponents((separator) =>
+            separator.setSpacing(SeparatorSpacingSize.Large)
+        );
+        containerWithPings.addTextDisplayComponents(releaseText);
+        containerWithPings.addSeparatorComponents((separator) =>
+            separator.setSpacing(SeparatorSpacingSize.Large)
+        );
+        containerWithPings.addTextDisplayComponents(detailsText);
+        const guildId = (channel as TextChannel).guild.id;
+        const encodedQuery = encodeURIComponent(matchedQuery);
+        const unsubButtonChannel = new ButtonBuilder()
+            .setCustomId(`unsub:${guildId}:${encodedQuery}`)
+            .setLabel('Unsubscribe')
+            .setStyle(ButtonStyle.Danger);
+        containerWithPings.addActionRowComponents((row) => row.addComponents(unsubButtonChannel));
 
-            await (channel as TextChannel)
-                .send({
-                    components: [containerWithPings],
-                    flags: MessageFlags.IsComponentsV2,
-                })
-                .then(() => {
-                    console.log(
-                        `${'>>'.green} [NOTIFICATION] `.white +
-                            `Sent to channel ${channel.id} (${userIdsToPing.length} users)`.green
-                    );
-                })
-                .catch(async (error: unknown) => {
-                    console.error(
-                        `${'>>'.red} [NOTIFICATION] `.white +
-                            `Failed to send to channel ${channel.id}`.red
-                    );
-                    await handleError(client, error);
-                });
-        }
+        await (channel as TextChannel)
+            .send({
+                components: [containerWithPings],
+                flags: MessageFlags.IsComponentsV2,
+            })
+            .then(() => {
+                console.log(
+                    `${'>>'.green} [NOTIFICATION] `.white +
+                        `Sent to channel ${channel.id} (${userIdsToPing.length} users)`.green
+                );
+            })
+            .catch(async (error: unknown) => {
+                console.error(
+                    `${'>>'.red} [NOTIFICATION] `.white +
+                        `Failed to send to channel ${channel.id}`.red
+                );
+                await handleError(client, error);
+            });
 
         console.log(
             `${'>>'.green} [NOTIFICATION] `.white +
@@ -774,13 +788,14 @@ export async function testNotification(client: Client, releaseName: string): Pro
  */
 export async function unsubscribeFromQuery(
     userId: string,
+    guildId: string,
     query: string
 ): Promise<{
     success: boolean;
     message?: string;
 }> {
     try {
-        const userKey = `user:${userId}`;
+        const userKey = `user:${guildId}:${userId}`;
 
         // Get user's subscriptions
         const userSubs: Array<{ id: string; query: string; created: number }> =
@@ -793,7 +808,7 @@ export async function unsubscribeFromQuery(
         }
 
         // Use the first matching subscription's ID to delete
-        const result = await deleteSubscription(userId, matchingSubs[0]!.id);
+        const result = await deleteSubscription(guildId, userId, matchingSubs[0]!.id);
 
         if (result.success) {
             return {
@@ -816,6 +831,7 @@ export async function unsubscribeFromQuery(
  * @returns Promise resolving to deletion result
  */
 export async function deleteSubscription(
+    guildId: string,
     userId: string,
     subscriptionId: string
 ): Promise<{
@@ -824,7 +840,7 @@ export async function deleteSubscription(
     deletedQuery?: string;
 }> {
     try {
-        const userKey = `user:${userId}`;
+        const userKey = `user:${guildId}:${userId}`;
 
         // Get user's subscriptions
         const userSubs: Array<{ id: string; query: string; created: number }> =
@@ -848,7 +864,7 @@ export async function deleteSubscription(
         }
 
         // Handle query cleanup
-        const queryKey = `query:${subToDelete.query.toLowerCase().replace(/\s+/g, '+')}`;
+        const queryKey = `query:${guildId}:${normalizeQueryStorageKey(subToDelete.query)}`;
         const queryUsers: string[] = (await keyv.get(queryKey)) || [];
 
         // Remove user from query subscribers
@@ -858,7 +874,7 @@ export async function deleteSubscription(
             // No more users monitoring this query, delete the query key entirely
             await keyv.delete(queryKey);
             // Remove from global queries tracking
-            await removeFromGlobalQueries(subToDelete.query);
+            await removeFromGlobalQueries(guildId, subToDelete.query);
         } else {
             // Update query subscribers
             await keyv.set(queryKey, updatedQueryUsers);
