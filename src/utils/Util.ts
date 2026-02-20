@@ -77,6 +77,26 @@ export async function setLastSeenForQuery(query: string, release: Release): Prom
     await keyv.set(key, payload);
 }
 
+// ---------------------------
+// Per-guild alerts channel (for channel notification mode)
+// ---------------------------
+const ALERTS_CHANNEL_KEY_PREFIX = 'alertsChannel:';
+
+export async function getAlertsChannelForGuild(guildId: string): Promise<string | undefined> {
+    return (await keyv.get(`${ALERTS_CHANNEL_KEY_PREFIX}${guildId}`)) as string | undefined;
+}
+
+export async function setAlertsChannelForGuild(
+    guildId: string,
+    channelId: string | null
+): Promise<void> {
+    if (channelId === null) {
+        await keyv.delete(`${ALERTS_CHANNEL_KEY_PREFIX}${guildId}`);
+    } else {
+        await keyv.set(`${ALERTS_CHANNEL_KEY_PREFIX}${guildId}`, channelId);
+    }
+}
+
 /**
  * Capitalises the first letter of each word in a string.
  * @param str - The string to be capitalised.
@@ -543,22 +563,25 @@ export async function processReleaseNotification(
 
         const notificationBatches = new Map<string, Set<string>>();
 
+        const isTestRelease = release.row.id === 999_999;
+
         for (const subscription of subscriptions) {
             const { query, users } = subscription;
 
             // Check if the query matches the release name
             if (isQueryMatch(query, releaseName)) {
-                // Check if we've already seen this release for this query (deduplication)
-                const { preAt: lastPreAt } = await getLastSeenForQuery(query);
-                const isNewer =
-                    typeof lastPreAt === 'number' ? release.row.preAt > lastPreAt : true;
+                const shouldNotify = isTestRelease
+                    ? true
+                    : await getLastSeenForQuery(query).then(({ preAt: lastPreAt }) =>
+                          typeof lastPreAt === 'number' ? release.row.preAt > lastPreAt : true
+                      );
 
-                if (isNewer) {
+                if (shouldNotify) {
                     matchedQueries.add(query);
-                    // Record last seen for this query to dedupe future polls
-                    await setLastSeenForQuery(query, release.row);
+                    if (!isTestRelease) {
+                        await setLastSeenForQuery(query, release.row);
+                    }
 
-                    // Batch users by query for efficient notifications
                     if (!notificationBatches.has(query)) {
                         notificationBatches.set(query, new Set());
                     }
@@ -610,13 +633,6 @@ export async function sendBatchedNotification(
     }
 
     try {
-        const container = new ContainerBuilder();
-
-        // Main content as text displays (no sections to avoid validation issues)
-        const headerText = new TextDisplayBuilder().setContent(
-            ['# 🎯 New Release Match!', `-# Match: \`${matchedQuery}\``].join('\n')
-        );
-
         const releaseText = new TextDisplayBuilder().setContent(
             [
                 `## 📦 ${release.name}`,
@@ -636,125 +652,71 @@ export async function sendBatchedNotification(
                 .join('\n')
         );
 
-        container.addTextDisplayComponents(headerText);
-        container.addSeparatorComponents((separator) =>
-            separator.setSpacing(SeparatorSpacingSize.Large)
-        );
-        container.addTextDisplayComponents(releaseText);
-        container.addSeparatorComponents((separator) =>
-            separator.setSpacing(SeparatorSpacingSize.Large)
-        );
-        container.addTextDisplayComponents(detailsText);
+        // Build channelId -> set of user IDs to ping (users in guilds that use this channel).
+        const channelToUserIds = new Map<string, Set<string>>();
+        for (const [guildId] of client.guilds.cache) {
+            const channelId = await getAlertsChannelForGuild(guildId);
+            if (!channelId) {
+                continue;
+            }
+            if (!channelToUserIds.has(channelId)) {
+                channelToUserIds.set(channelId, new Set());
+            }
+            for (const id of userIds) {
+                channelToUserIds.get(channelId)!.add(id);
+            }
+        }
+        for (const [channelId, userIdSet] of channelToUserIds) {
+            const channel =
+                client.channels.cache.get(channelId) ??
+                (await client.channels.fetch(channelId).catch(() => null));
+            const canSendToChannel = channel?.isTextBased() && channel && 'send' in channel;
+            if (!canSendToChannel) {
+                continue;
+            }
+            const userIdsToPing = Array.from(userIdSet);
+            const pings = userIdsToPing.map((id) => `<@${id}>`).join(' ');
+            const containerWithPings = new ContainerBuilder();
+            const headerWithPings = new TextDisplayBuilder().setContent(
+                ['# 🎯 New Release Match!', `-# Query: \`${matchedQuery}\``, `-# ${pings}`].join(
+                    '\n'
+                )
+            );
+            containerWithPings.addTextDisplayComponents(headerWithPings);
+            containerWithPings.addSeparatorComponents((separator) =>
+                separator.setSpacing(SeparatorSpacingSize.Large)
+            );
+            containerWithPings.addTextDisplayComponents(releaseText);
+            containerWithPings.addSeparatorComponents((separator) =>
+                separator.setSpacing(SeparatorSpacingSize.Large)
+            );
+            containerWithPings.addTextDisplayComponents(detailsText);
+            const unsubButtonChannel = new ButtonBuilder()
+                .setCustomId(`unsub:${matchedQuery}`)
+                .setLabel('Unsubscribe')
+                .setStyle(ButtonStyle.Danger);
+            containerWithPings.addActionRowComponents((row) =>
+                row.addComponents(unsubButtonChannel)
+            );
 
-        // Add unsubscribe button
-        const unsubButton = new ButtonBuilder()
-            .setCustomId(`unsub:${matchedQuery}`)
-            .setLabel('Unsubscribe')
-            .setStyle(ButtonStyle.Danger);
-
-        container.addActionRowComponents((row) => row.addComponents(unsubButton));
-
-        if (config.NOTIFICATION_MODE === 'dm') {
-            // Send individual DMs for each user
-            for (const userId of userIds) {
-                const user = await client.users.fetch(userId).catch(() => null);
-                if (!user) {
-                    console.warn(
-                        `${'>>'.yellow} [NOTIFICATION] `.white + `User ${userId} not found`.yellow
+            await (channel as TextChannel)
+                .send({
+                    components: [containerWithPings],
+                    flags: MessageFlags.IsComponentsV2,
+                })
+                .then(() => {
+                    console.log(
+                        `${'>>'.green} [NOTIFICATION] `.white +
+                            `Sent to channel ${channel.id} (${userIdsToPing.length} users)`.green
                     );
-                    continue;
-                }
-
-                await user
-                    .send({ components: [container], flags: MessageFlags.IsComponentsV2 })
-                    .catch(async (error: unknown) => {
-                        console.error(
-                            `${'>>'.red} [NOTIFICATION] `.white + `Failed to DM user ${userId}`.red
-                        );
-                        await handleError(client, error);
-                    });
-            }
-        } else if (config.NOTIFICATION_MODE === 'channel' && config.NOTIFICATION_CHANNEL) {
-            // Send via channel
-            console.log(
-                `${'>>'.cyan} [NOTIFICATION] `.white +
-                    `Looking for channel: ${config.NOTIFICATION_CHANNEL}`.cyan
-            );
-            const channel = client.channels.cache.get(config.NOTIFICATION_CHANNEL);
-
-            if (!channel) {
-                console.warn(
-                    `${'>>'.yellow} [NOTIFICATION] `.white +
-                        `Channel ${config.NOTIFICATION_CHANNEL} not found in cache`.yellow
-                );
-                return;
-            }
-
-            console.log(
-                `${'>>'.cyan} [NOTIFICATION] `.white +
-                    `Found channel: ${channel.id}, type: ${channel.type}, isTextBased: ${channel.isTextBased()}`
-                        .cyan
-            );
-
-            if (channel?.isTextBased() && 'send' in channel) {
-                // Add user pings to the header text instead of using content
-                const pings = userIds.map((id) => `<@${id}>`).join(' ');
-
-                // Rebuild container with pings in the header
-                const containerWithPings = new ContainerBuilder();
-
-                const headerWithPings = new TextDisplayBuilder().setContent(
-                    [
-                        '# 🎯 New Release Match!',
-                        `-# Query: \`${matchedQuery}\``,
-                        `-# ${pings}`,
-                    ].join('\n')
-                );
-
-                containerWithPings.addTextDisplayComponents(headerWithPings);
-                containerWithPings.addSeparatorComponents((separator) =>
-                    separator.setSpacing(SeparatorSpacingSize.Large)
-                );
-                containerWithPings.addTextDisplayComponents(releaseText);
-                containerWithPings.addSeparatorComponents((separator) =>
-                    separator.setSpacing(SeparatorSpacingSize.Large)
-                );
-                containerWithPings.addTextDisplayComponents(detailsText);
-
-                // Add unsubscribe button to channel version too
-                const unsubButtonChannel = new ButtonBuilder()
-                    .setCustomId(`unsub:${matchedQuery}`)
-                    .setLabel('Unsubscribe')
-                    .setStyle(ButtonStyle.Danger);
-
-                containerWithPings.addActionRowComponents((row) =>
-                    row.addComponents(unsubButtonChannel)
-                );
-
-                await (channel as TextChannel)
-                    .send({
-                        components: [containerWithPings],
-                        flags: MessageFlags.IsComponentsV2,
-                    })
-                    .then(() => {
-                        console.log(
-                            `${'>>'.green} [NOTIFICATION] `.white +
-                                `Successfully sent to channel ${channel.id} (${userIds.length} users)`
-                                    .green
-                        );
-                    })
-                    .catch(async (error: unknown) => {
-                        console.error(
-                            `${'>>'.red} [NOTIFICATION] `.white + 'Failed to send to channel'.red
-                        );
-                        await handleError(client, error);
-                    });
-            } else {
-                console.warn(
-                    `${'>>'.yellow} [NOTIFICATION] `.white +
-                        'Channel is not text-based or missing send method'.yellow
-                );
-            }
+                })
+                .catch(async (error: unknown) => {
+                    console.error(
+                        `${'>>'.red} [NOTIFICATION] `.white +
+                            `Failed to send to channel ${channel.id}`.red
+                    );
+                    await handleError(client, error);
+                });
         }
 
         console.log(
@@ -776,6 +738,7 @@ export async function sendBatchedNotification(
  * @param releaseName - Name of the fake release
  */
 export async function testNotification(client: Client, releaseName: string): Promise<void> {
+    const preAt = Math.floor(Date.now() / 1000);
     const mockRelease = {
         action: 'insert' as const,
         row: {
@@ -787,7 +750,7 @@ export async function testNotification(client: Client, releaseName: string): Pro
             url: '',
             size: 2048,
             files: 15,
-            preAt: 1_703_123_456,
+            preAt,
             nuke: null,
         },
     };
