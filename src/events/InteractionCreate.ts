@@ -44,12 +44,26 @@ export class InteractionCreate {
         try {
             // Handle unsubscribe button clicks
             if (interaction.isButton() && interaction.customId.startsWith('unsub:')) {
-                const query = interaction.customId.replace('unsub:', '');
+                const payload = interaction.customId.replace('unsub:', '');
+                const parts = payload.split(':');
+                let guildId = interaction.guildId ?? '';
+                let query = payload;
+                if (parts.length >= 2) {
+                    guildId = parts[0] || guildId;
+                    query = decodeURIComponent(parts.slice(1).join(':'));
+                }
                 const userId = interaction.user.id;
 
                 await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-                const result = await unsubscribeFromQuery(userId, query);
+                if (!guildId) {
+                    await interaction.editReply({
+                        content: '❌ Could not determine the server for this unsubscribe action.',
+                    });
+                    return;
+                }
+
+                const result = await unsubscribeFromQuery(userId, guildId, query);
 
                 await interaction.editReply({
                     content:
