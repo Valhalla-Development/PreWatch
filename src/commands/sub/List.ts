@@ -18,9 +18,10 @@ export class List {
     private static readonly PAGE_SIZE: number = 6;
 
     private async fetchUserSubs(
+        guildId: string,
         userId: string
     ): Promise<Array<{ id: string; query: string; created: number }>> {
-        const userKey = `user:${userId}`;
+        const userKey = `user:${guildId}:${userId}`;
         const subs: Array<{ id: string; query: string; created: number }> =
             ((await keyv.get(userKey)) as Array<{ id: string; query: string; created: number }>) ||
             [];
@@ -28,6 +29,7 @@ export class List {
     }
 
     private buildPageContainer(
+        guildId: string,
         userId: string,
         subs: Array<{ id: string; query: string; created: number }>,
         pageIndex: number
@@ -54,7 +56,7 @@ export class List {
             );
 
             const removeBtn = new ButtonBuilder()
-                .setCustomId(`subs:list:rm:${userId}:${sub.id}:${clampedPage}`)
+                .setCustomId(`subs:list:rm:${guildId}:${userId}:${sub.id}:${clampedPage}`)
                 .setLabel('Remove')
                 .setStyle(ButtonStyle.Danger);
 
@@ -68,20 +70,22 @@ export class List {
         // Navigation row (only show if more than one page)
         if (totalPages > 1) {
             const prevBtn = new ButtonBuilder()
-                .setCustomId(`subs:list:nav:prev:${userId}:${Math.max(clampedPage - 1, 0)}`)
+                .setCustomId(
+                    `subs:list:nav:prev:${guildId}:${userId}:${Math.max(clampedPage - 1, 0)}`
+                )
                 .setLabel('Prev')
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(clampedPage === 0);
 
             const homeBtn = new ButtonBuilder()
-                .setCustomId(`subs:list:nav:home:${userId}:0`)
+                .setCustomId(`subs:list:nav:home:${guildId}:${userId}:0`)
                 .setLabel('Home')
                 .setStyle(ButtonStyle.Primary)
                 .setDisabled(clampedPage === 0);
 
             const nextBtn = new ButtonBuilder()
                 .setCustomId(
-                    `subs:list:nav:next:${userId}:${Math.min(clampedPage + 1, totalPages - 1)}`
+                    `subs:list:nav:next:${guildId}:${userId}:${Math.min(clampedPage + 1, totalPages - 1)}`
                 )
                 .setLabel('Next')
                 .setStyle(ButtonStyle.Secondary)
@@ -96,9 +100,14 @@ export class List {
     @Slash({ description: 'List your monitored queries' })
     async list(interaction: CommandInteraction): Promise<void> {
         await interaction.deferReply();
+        if (!interaction.guildId) {
+            await interaction.editReply('❌ This command can only be used in a server.');
+            return;
+        }
+        const guildId = interaction.guildId;
         const userId = interaction.user.id;
-        const subs = await this.fetchUserSubs(userId);
-        const container = this.buildPageContainer(userId, subs, 0);
+        const subs = await this.fetchUserSubs(guildId, userId);
+        const container = this.buildPageContainer(guildId, userId, subs, 0);
         await interaction.editReply({
             components: [container],
             flags: MessageFlags.IsComponentsV2,
@@ -108,9 +117,8 @@ export class List {
     @ButtonComponent({ id: /^subs:list:nav:.+$/ })
     async onNavigate(interaction: ButtonInteraction): Promise<void> {
         const parts = interaction.customId.split(':');
-        // New format: ['subs','list','nav','<dir>','<userId>','<page>']
-        // Old format: ['subs','list','nav','<userId>','<page>']
-        if (parts.length < 5) {
+        // New format: ['subs','list','nav','<dir>','<guildId>','<userId>','<page>']
+        if (parts.length < 7) {
             await interaction.update({
                 components: [
                     new ContainerBuilder().addTextDisplayComponents(
@@ -122,9 +130,9 @@ export class List {
             return;
         }
 
-        const hasDirection = parts.length >= 6;
-        const ownerId = hasDirection ? parts[4]! : parts[3]!;
-        const pageStr = hasDirection ? parts[5]! : parts[4]!;
+        const guildId = parts[4]!;
+        const ownerId = parts[5]!;
+        const pageStr = parts[6]!;
         const requestedBy = interaction.user.id;
         if (ownerId !== requestedBy) {
             await interaction.update({
@@ -139,20 +147,39 @@ export class List {
             });
             return;
         }
+        if (interaction.guildId !== guildId) {
+            await interaction.update({
+                components: [
+                    new ContainerBuilder().addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(
+                            '❌ This list can only be controlled in the same server.'
+                        )
+                    ),
+                ],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
 
         const page = Number.parseInt(pageStr, 10);
-        const subs = await this.fetchUserSubs(ownerId);
-        const container = this.buildPageContainer(ownerId, subs, Number.isNaN(page) ? 0 : page);
+        const subs = await this.fetchUserSubs(guildId, ownerId);
+        const container = this.buildPageContainer(
+            guildId,
+            ownerId,
+            subs,
+            Number.isNaN(page) ? 0 : page
+        );
         await interaction.update({ components: [container], flags: MessageFlags.IsComponentsV2 });
     }
 
     @ButtonComponent({ id: /^subs:list:rm:.+$/ })
     async onRemove(interaction: ButtonInteraction): Promise<void> {
         const parts = interaction.customId.split(':');
-        // ['subs','list','rm','<userId>','<subId>','<page>']
-        const ownerId = parts[3]!;
-        const subId = parts[4]!;
-        const page = Number.parseInt(parts[5]!, 10) || 0;
+        // ['subs','list','rm','<guildId>','<userId>','<subId>','<page>']
+        const guildId = parts[3]!;
+        const ownerId = parts[4]!;
+        const subId = parts[5]!;
+        const page = Number.parseInt(parts[6]!, 10) || 0;
 
         if (ownerId !== interaction.user.id) {
             await interaction.update({
@@ -167,12 +194,25 @@ export class List {
             });
             return;
         }
+        if (interaction.guildId !== guildId) {
+            await interaction.update({
+                components: [
+                    new ContainerBuilder().addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(
+                            '❌ This remove action must be used in the same server.'
+                        )
+                    ),
+                ],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
 
-        const result = await deleteSubscription(ownerId, subId);
-        const subs = await this.fetchUserSubs(ownerId);
+        const result = await deleteSubscription(guildId, ownerId, subId);
+        const subs = await this.fetchUserSubs(guildId, ownerId);
         const lastPage = Math.max(0, Math.ceil(subs.length / List.PAGE_SIZE) - 1);
         const targetPage = Math.min(page, lastPage);
-        const container = this.buildPageContainer(ownerId, subs, targetPage);
+        const container = this.buildPageContainer(guildId, ownerId, subs, targetPage);
 
         await interaction.update({ components: [container], flags: MessageFlags.IsComponentsV2 });
 
