@@ -32,13 +32,14 @@ export class Add {
      * Helper function to create a subscription
      */
     private async createSubscription(data: {
+        guildId: string;
         query: string;
         userId: string;
         subscriptionId: string;
         queryKey: string;
         userKey: string;
     }): Promise<{ success: boolean; message?: string; userSubs?: Subscription[] }> {
-        const { query, userId, subscriptionId, queryKey, userKey } = data;
+        const { guildId, query, userId, subscriptionId, queryKey, userKey } = data;
         try {
             // Get existing user subscriptions
             const userSubs: Subscription[] = (await keyv.get(userKey)) || [];
@@ -61,7 +62,7 @@ export class Add {
                 await keyv.set(queryKey, queryUsers);
 
                 // Add to global queries tracking for notifications
-                await addToGlobalQueries(query);
+                await addToGlobalQueries(guildId, query);
             }
 
             return { success: true, userSubs };
@@ -89,6 +90,7 @@ export class Add {
      * Helper function to create success message components
      */
     private createSuccessMessage(
+        guildId: string,
         query: string,
         subscriptionId: string,
         userSubsLength: number,
@@ -112,7 +114,7 @@ export class Add {
         );
 
         const undoBtn = new ButtonBuilder()
-            .setCustomId(`subs:undo:${subscriptionId}`)
+            .setCustomId(`subs:undo:${guildId}:${subscriptionId}`)
             .setLabel('Undo')
             .setStyle(ButtonStyle.Secondary);
 
@@ -136,10 +138,16 @@ export class Add {
     ) {
         await interaction.deferReply();
 
+        if (!interaction.guildId) {
+            await interaction.editReply('❌ This command can only be used in a server.');
+            return;
+        }
+
+        const guildId = interaction.guildId;
         const userId = interaction.user.id;
         const subscriptionId = `${userId}-${Date.now()}`;
-        const queryKey = `query:${query.toLowerCase().replace(/\s+/g, '+')}`;
-        const userKey = `user:${userId}`;
+        const queryKey = `query:${guildId}:${query.toLowerCase().replace(/\s+/g, '+').trim()}`;
+        const userKey = `user:${guildId}:${userId}`;
 
         try {
             // Get existing user subscriptions
@@ -202,7 +210,7 @@ export class Add {
                 // Build compact customId
                 const encodedQuery = query.trim();
                 const qEnc = encodeURIComponent(encodedQuery);
-                const confirmId = `${userId}:${qEnc}`;
+                const confirmId = `${guildId}:${userId}:${qEnc}`;
 
                 const continueBtn = new ButtonBuilder()
                     .setCustomId(`subs:confirm:${confirmId}`)
@@ -238,6 +246,7 @@ export class Add {
 
             // Create the subscription using helper function
             const result = await this.createSubscription({
+                guildId,
                 query,
                 userId,
                 subscriptionId,
@@ -255,6 +264,7 @@ export class Add {
                 interaction.guildId ?? null
             );
             const container = this.createSuccessMessage(
+                guildId,
                 query,
                 subscriptionId,
                 result.userSubs!.length,
@@ -275,8 +285,8 @@ export class Add {
     @ButtonComponent({ id: /^subs:confirm:.+$/ })
     async confirm(interaction: ButtonInteraction) {
         const parts = interaction.customId.split(':');
-        // Format: ['subs','confirm','<userId>','<qEnc>']
-        if (parts.length < 4) {
+        // Format: ['subs','confirm','<guildId>','<userId>','<qEnc>']
+        if (parts.length < 5) {
             await interaction.update({
                 components: [
                     new ContainerBuilder().addTextDisplayComponents(
@@ -288,8 +298,9 @@ export class Add {
             return;
         }
 
-        const userId = parts[2]!;
-        const qEnc = parts.slice(3).join(':');
+        const guildId = parts[2]!;
+        const userId = parts[3]!;
+        const qEnc = parts.slice(4).join(':');
         const query = decodeURIComponent(qEnc);
 
         // Verify ownership
@@ -306,14 +317,28 @@ export class Add {
             });
             return;
         }
+        if (interaction.guildId !== guildId) {
+            await interaction.update({
+                components: [
+                    new ContainerBuilder().addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent(
+                            '❌ This confirmation must be used in the same server.'
+                        )
+                    ),
+                ],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
 
         // Reconstruct values
         const subscriptionId = `${userId}-${Date.now()}`;
-        const queryKey = `query:${query.toLowerCase().replace(/\s+/g, '+')}`;
-        const userKey = `user:${userId}`;
+        const queryKey = `query:${guildId}:${query.toLowerCase().replace(/\s+/g, '+').trim()}`;
+        const userKey = `user:${guildId}:${userId}`;
 
         // Create the subscription using helper function
         const result = await this.createSubscription({
+            guildId,
             query,
             userId,
             subscriptionId,
@@ -336,6 +361,7 @@ export class Add {
         // Create success message using helper function
         const locationText = await this.getNotificationLocationText(interaction.guildId ?? null);
         const container = this.createSuccessMessage(
+            guildId,
             query,
             subscriptionId,
             result.userSubs!.length,
@@ -350,8 +376,23 @@ export class Add {
 
     @ButtonComponent({ id: /^subs:undo:.+$/ })
     async undo(interaction: ButtonInteraction) {
-        const subscriptionId = interaction.customId.split(':')[2];
+        const parts = interaction.customId.split(':');
+        const guildId = parts[2] || interaction.guildId;
+        const subscriptionId = parts[3] || parts[2];
         const userId = interaction.user.id;
+
+        if (!guildId) {
+            const errorText = new TextDisplayBuilder().setContent(
+                ['## ❌ **Invalid Request**', '', '> This action must be used in a server.'].join(
+                    '\n'
+                )
+            );
+            await interaction.update({
+                components: [new ContainerBuilder().addTextDisplayComponents(errorText)],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
 
         // Validate subscription ID format
         if (!subscriptionId?.includes('-')) {
@@ -381,7 +422,7 @@ export class Add {
         }
 
         // Delete the subscription using utility function
-        const result = await deleteSubscription(userId, subscriptionId);
+        const result = await deleteSubscription(guildId, userId, subscriptionId);
 
         if (result.success) {
             const undoText = new TextDisplayBuilder().setContent(
