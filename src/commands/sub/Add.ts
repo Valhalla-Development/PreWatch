@@ -19,11 +19,11 @@ import {
     keyv,
 } from '../../utils/Util.js';
 
-type Subscription = {
+interface Subscription {
+    created: number;
     id: string;
     query: string;
-    created: number;
-};
+}
 
 @Discord()
 @Category('Sub')

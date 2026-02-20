@@ -21,33 +21,33 @@ import WebSocket from 'ws';
 import { config } from '../config/Config.js';
 
 // API Response Types
-type Nuke = {
+interface Nuke {
     id: number;
-    typeId: number;
-    type: string;
-    preId: number;
-    reason: string;
     net: string;
     nukeAt: number;
-};
+    preId: number;
+    reason: string;
+    type: string;
+    typeId: number;
+}
 
-type Release = {
+interface Release {
+    cat: string;
+    files: number;
+    genre: string;
     id: number;
     name: string;
-    team: string;
-    cat: string;
-    genre: string;
-    url: string;
-    size: number;
-    files: number;
-    preAt: number;
     nuke: Nuke | null;
-};
+    preAt: number;
+    size: number;
+    team: string;
+    url: string;
+}
 
-type WebSocketMessage = {
+interface WebSocketMessage {
     action: 'insert' | 'update' | 'delete' | 'nuke' | 'unnuke' | 'modnuke' | 'delpre' | 'undelpre';
     row: Release;
-};
+}
 
 export const keyv = new Keyv({
     store: new KeyvSqlite({ uri: 'sqlite://src/data/db.sqlite' }),
@@ -58,7 +58,10 @@ keyv.on('error', (err) => console.log('[keyv] Connection Error', err));
 // ---------------------------
 // Last-seen tracking helpers
 // ---------------------------
-type LastSeen = { id?: number; preAt?: number };
+interface LastSeen {
+    id?: number;
+    preAt?: number;
+}
 
 function normalizeQueryStorageKey(query: string): string {
     return query.toLowerCase().replace(/\s+/g, '+').trim();
