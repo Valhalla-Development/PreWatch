@@ -1,6 +1,6 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.0.6/schema.json",
-  "extends": ["ultracite"],
+  "$schema": "https://biomejs.dev/schemas/2.4.3/schema.json",
+  "extends": ["ultracite/core"],
   "linter": {
     "rules": {
       "suspicious": {
@@ -22,11 +22,10 @@
         "noNestedTernary": "off",
         "noMagicNumbers": "off"
       },
-      "nursery": {
-        "useMaxParams": "off"
-      },
+      "nursery": {},
       "complexity": {
-        "noExcessiveCognitiveComplexity": "off"
+        "noExcessiveCognitiveComplexity": "off",
+        "useMaxParams": "off"
       },
       "performance": {
         "useTopLevelRegex": "off"
@@ -36,7 +35,8 @@
   "javascript": {
     "formatter": {
       "indentWidth": 4,
-      "lineWidth": 100
+      "lineWidth": 100,
+      "quoteStyle": "single"
     },
     "parser": {
       "unsafeParameterDecoratorsEnabled": true
