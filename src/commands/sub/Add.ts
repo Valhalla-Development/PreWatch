@@ -11,7 +11,13 @@ import {
 } from 'discord.js';
 import { ButtonComponent, type Client, Discord, Slash, SlashOption } from 'discordx';
 import { config } from '../../config/Config.js';
-import { addToGlobalQueries, deleteSubscription, handleError, keyv } from '../../utils/Util.js';
+import {
+    addToGlobalQueries,
+    deleteSubscription,
+    getAlertsChannelForGuild,
+    handleError,
+    keyv,
+} from '../../utils/Util.js';
 
 type Subscription = {
     id: string;
@@ -66,20 +72,28 @@ export class Add {
     }
 
     /**
+     * Resolves where alerts are sent for display
+     */
+    private async getNotificationLocationText(guildId: string | null): Promise<string> {
+        const channelId = guildId ? await getAlertsChannelForGuild(guildId) : undefined;
+        if (channelId) {
+            return `> 📍 **Alerts sent to:** <#${channelId}>`;
+        }
+        return [
+            '> 📍 **Alerts sent to:** *No channel set for this server.*',
+            '> ⚠️ Ask an admin to run **/setalertschannel** so release alerts are posted here.',
+        ].join('\n');
+    }
+
+    /**
      * Helper function to create success message components
      */
     private createSuccessMessage(
         query: string,
         subscriptionId: string,
-        userSubsLength: number
+        userSubsLength: number,
+        notificationLocationText: string
     ): ContainerBuilder {
-        let notificationLocationText = '';
-        if (config.NOTIFICATION_MODE === 'channel' && config.NOTIFICATION_CHANNEL) {
-            notificationLocationText = `> 📍 **Alerts sent to:** <#${config.NOTIFICATION_CHANNEL}>`;
-        } else {
-            notificationLocationText = '> 📍 **Alerts sent to:** DM';
-        }
-
         const countText =
             config.MAX_SUBSCRIPTIONS_PER_USER !== 0
                 ? `${userSubsLength}/${config.MAX_SUBSCRIPTIONS_PER_USER}`
@@ -237,10 +251,14 @@ export class Add {
             }
 
             // Create success message using helper function
+            const locationText = await this.getNotificationLocationText(
+                interaction.guildId ?? null
+            );
             const container = this.createSuccessMessage(
                 query,
                 subscriptionId,
-                result.userSubs!.length
+                result.userSubs!.length,
+                locationText
             );
 
             await interaction.editReply({
@@ -316,7 +334,13 @@ export class Add {
         }
 
         // Create success message using helper function
-        const container = this.createSuccessMessage(query, subscriptionId, result.userSubs!.length);
+        const locationText = await this.getNotificationLocationText(interaction.guildId ?? null);
+        const container = this.createSuccessMessage(
+            query,
+            subscriptionId,
+            result.userSubs!.length,
+            locationText
+        );
 
         await interaction.update({
             components: [container],
