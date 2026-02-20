@@ -20,6 +20,7 @@ export class InteractionCreate {
 
         const isValidInteraction =
             interaction.isStringSelectMenu() ||
+            interaction.isChannelSelectMenu() ||
             interaction.isChatInputCommand() ||
             interaction.isContextMenuCommand() ||
             interaction.isButton();
