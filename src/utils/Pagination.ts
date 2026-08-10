@@ -49,8 +49,8 @@ export async function pagination(
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(back, home, next);
 
     const m = await interaction.reply({
-        embeds: [embeds[0]!],
         components: [row],
+        embeds: [embeds[0]!],
         fetchReply: true,
     });
 
@@ -87,8 +87,8 @@ export async function pagination(
             const rowNew = new ActionRowBuilder<ButtonBuilder>().addComponents(back, home, next);
 
             await b.update({
-                embeds: [embeds[currentPage]!],
                 components: [rowNew],
+                embeds: [embeds[currentPage]!],
             });
         }
 
@@ -105,8 +105,8 @@ export async function pagination(
             const rowNew = new ActionRowBuilder<ButtonBuilder>().addComponents(back, home, next);
 
             await b.update({
-                embeds: [embeds[currentPage]!],
                 components: [rowNew],
+                embeds: [embeds[currentPage]!],
             });
         }
 
@@ -118,7 +118,7 @@ export async function pagination(
 
             const rowNew = new ActionRowBuilder<ButtonBuilder>().addComponents(back, home, next);
 
-            await b.update({ embeds: [embeds[currentPage]!], components: [rowNew] });
+            await b.update({ components: [rowNew], embeds: [embeds[currentPage]!] });
         }
     });
 
@@ -127,7 +127,7 @@ export async function pagination(
         back.setDisabled(true);
         next.setDisabled(true);
 
-        interaction.editReply({ embeds: [embeds[currentPage]!], components: [row] });
+        interaction.editReply({ components: [row], embeds: [embeds[currentPage]!] });
     });
 
     collector.on('error', (e: Error) => console.log(e));

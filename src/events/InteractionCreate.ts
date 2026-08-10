@@ -113,9 +113,9 @@ export class InteractionCreate {
                 .setColor('#e91e63')
                 .setTitle('Command Executed')
                 .addFields(
-                    { name: '👤 User', value: `${interaction.user}`, inline: true },
-                    { name: '📅 Date', value: `<t:${nowInSeconds}:F>`, inline: true },
-                    { name: '📰 Interaction', value: link, inline: true },
+                    { inline: true, name: '👤 User', value: `${interaction.user}` },
+                    { inline: true, name: '📅 Date', value: `<t:${nowInSeconds}:F>` },
+                    { inline: true, name: '📰 Interaction', value: link },
                     { name: '🖥️ Command', value: codeBlock('kotlin', executedCommand) }
                 );
 

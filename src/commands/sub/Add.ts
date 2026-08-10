@@ -46,9 +46,9 @@ export class Add {
 
             // Create new subscription
             const newSub: Subscription = {
+                created: Date.now(),
                 id: subscriptionId,
                 query,
-                created: Date.now(),
             };
 
             // Update user subscriptions
@@ -68,7 +68,7 @@ export class Add {
             return { success: true, userSubs };
         } catch (error) {
             console.error('Error creating subscription:', error);
-            return { success: false, message: '❌ Failed to add subscription. Try again later.' };
+            return { message: '❌ Failed to add subscription. Try again later.', success: false };
         }
     }
 
@@ -97,9 +97,9 @@ export class Add {
         notificationLocationText: string
     ): ContainerBuilder {
         const countText =
-            config.MAX_SUBSCRIPTIONS_PER_USER !== 0
-                ? `${userSubsLength}/${config.MAX_SUBSCRIPTIONS_PER_USER}`
-                : false;
+            config.MAX_SUBSCRIPTIONS_PER_USER === 0
+                ? false
+                : `${userSubsLength}/${config.MAX_SUBSCRIPTIONS_PER_USER}`;
 
         const text = new TextDisplayBuilder().setContent(
             [
@@ -126,11 +126,11 @@ export class Add {
     async add(
         @SlashOption({
             description: 'Add a query to monitor',
+            maxLength: 50,
+            minLength: 4,
             name: 'query',
             required: true,
             type: ApplicationCommandOptionType.String,
-            minLength: 4,
-            maxLength: 50,
         })
         query: string,
         interaction: CommandInteraction,
@@ -143,7 +143,7 @@ export class Add {
             return;
         }
 
-        const guildId = interaction.guildId;
+        const { guildId } = interaction;
         const userId = interaction.user.id;
         const subscriptionId = `${userId}-${Date.now()}`;
         const queryKey = `query:${guildId}:${query.toLowerCase().replace(/\s+/g, '+').trim()}`;
@@ -248,9 +248,9 @@ export class Add {
             const result = await this.createSubscription({
                 guildId,
                 query,
-                userId,
-                subscriptionId,
                 queryKey,
+                subscriptionId,
+                userId,
                 userKey,
             });
 
@@ -340,9 +340,9 @@ export class Add {
         const result = await this.createSubscription({
             guildId,
             query,
-            userId,
-            subscriptionId,
             queryKey,
+            subscriptionId,
+            userId,
             userKey,
         });
 
@@ -407,7 +407,7 @@ export class Add {
         }
 
         // Extract user ID from subscription ID to verify ownership
-        const subscriptionUserId = subscriptionId.split('-')[0];
+        const [subscriptionUserId] = subscriptionId.split('-');
         if (subscriptionUserId !== userId) {
             const errorText = new TextDisplayBuilder().setContent(
                 ['## ❌ **Access Denied**', '', '> You can only undo your own subscriptions.'].join(

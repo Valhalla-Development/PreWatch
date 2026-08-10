@@ -30,8 +30,8 @@ export class SetAlertsChannel {
      * Set the channel where release alerts are sent in this server.
      */
     @Slash({
-        description: 'Set the channel for release alerts in this server',
         defaultMemberPermissions: PermissionFlagsBits.ManageGuild,
+        description: 'Set the channel for release alerts in this server',
     })
     async setalertschannel(interaction: CommandInteraction, _client: Client): Promise<void> {
         if (!interaction.guildId) {

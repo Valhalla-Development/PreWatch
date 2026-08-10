@@ -1,6 +1,9 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.3/schema.json",
-  "extends": ["ultracite/core"],
+  "$schema": "https://biomejs.dev/schemas/2.5.7/schema.json",
+  "extends": ["ultracite/biome/core"],
+  "files": {
+    "includes": ["**", "!**/*.json"]
+  },
   "linter": {
     "rules": {
       "suspicious": {

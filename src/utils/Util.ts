@@ -50,8 +50,8 @@ interface WebSocketMessage {
 }
 
 export const keyv = new Keyv({
-    store: new KeyvSqlite({ uri: 'sqlite://src/data/db.sqlite' }),
     namespace: 'data',
+    store: new KeyvSqlite({ uri: 'sqlite://src/data/db.sqlite' }),
 });
 keyv.on('error', (err) => console.log('[keyv] Connection Error', err));
 
@@ -176,9 +176,9 @@ export async function getCommandIds(
  */
 export function updateStatus(client: Client) {
     client.user?.setActivity({
-        type: ActivityType.Watching,
         name: `${client.guilds.cache.size.toLocaleString('en')} Guilds
             ${client.guilds.cache.reduce((a, b) => a + b.memberCount, 0).toLocaleString('en')} Users`,
+        type: ActivityType.Watching,
     });
 }
 
@@ -364,19 +364,18 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
     const loop = async () => {
         try {
             // Only poll queries from guilds that currently have an alerts channel configured.
-            const uniqueQueries = new Set<string>();
-            for (const [guildId] of client.guilds.cache) {
-                const channelId = await getAlertsChannelForGuild(guildId);
-                if (!channelId) {
-                    continue;
-                }
-                const allQueriesKey = `meta:all_queries:${guildId}`;
-                const guildQueries: string[] = (await keyv.get(allQueriesKey)) || [];
-                for (const query of guildQueries) {
-                    uniqueQueries.add(query);
-                }
-            }
-            const allQueries = Array.from(uniqueQueries);
+            const guildQueryLists = await Promise.all(
+                Array.from(client.guilds.cache.keys(), async (guildId) => {
+                    const channelId = await getAlertsChannelForGuild(guildId);
+                    if (!channelId) {
+                        return [];
+                    }
+                    const allQueriesKey = `meta:all_queries:${guildId}`;
+                    const guildQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+                    return guildQueries;
+                })
+            );
+            const allQueries = Array.from(new Set(guildQueryLists.flat()));
 
             // Compute interval that allows polling ALL queries each tick while respecting 30 rpm
             const baseIntervalSec = config.POLLING_INTERVAL_SECONDS;
@@ -423,6 +422,7 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
                 const url = `${config.API_URL}/?q=${encodeURIComponent(query)}&count=5`;
 
                 try {
+                    // biome-ignore lint/performance/noAwaitInLoops: requests are intentionally sequential and paced to respect the API rate limit
                     const resp = await axios.get(url);
                     const rows = resp?.data?.data?.rows as Release[] | undefined;
                     if (!rows || rows.length === 0) {
@@ -432,6 +432,7 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
                     const sortedRows = [...rows].sort((a, b) => a.preAt - b.preAt);
                     for (const row of sortedRows) {
                         const wsLike: WebSocketMessage = { action: 'insert', row };
+                        // biome-ignore lint/performance/noAwaitInLoops: releases must be processed in preAt order so dedupe state stays consistent
                         await processReleaseNotification(client, wsLike);
                     }
                 } catch (err) {
@@ -483,32 +484,31 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
 export async function getAllActiveSubscriptions(
     client: Client
 ): Promise<Array<{ guildId: string; channelId: string; query: string; users: string[] }>> {
-    const subscriptions: Array<{
-        guildId: string;
-        channelId: string;
-        query: string;
-        users: string[];
-    }> = [];
-
-    for (const [guildId] of client.guilds.cache) {
-        const channelId = await getAlertsChannelForGuild(guildId);
-        if (!channelId) {
-            continue;
-        }
-
-        const allQueriesKey = `meta:all_queries:${guildId}`;
-        const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
-        for (const query of allQueries) {
-            const queryKey = `query:${guildId}:${normalizeQueryStorageKey(query)}`;
-            const users = await keyv.get(queryKey);
-
-            if (users && Array.isArray(users) && users.length > 0) {
-                subscriptions.push({ guildId, channelId, query, users });
+    const guildSubscriptions = await Promise.all(
+        Array.from(client.guilds.cache.keys(), async (guildId) => {
+            const channelId = await getAlertsChannelForGuild(guildId);
+            if (!channelId) {
+                return [];
             }
-        }
-    }
 
-    return subscriptions;
+            const allQueriesKey = `meta:all_queries:${guildId}`;
+            const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
+            const queryResults = await Promise.all(
+                allQueries.map(async (query) => {
+                    const queryKey = `query:${guildId}:${normalizeQueryStorageKey(query)}`;
+                    const users = await keyv.get(queryKey);
+
+                    if (users && Array.isArray(users) && users.length > 0) {
+                        return { channelId, guildId, query, users };
+                    }
+                    return null;
+                })
+            );
+            return queryResults.filter((result) => result !== null);
+        })
+    );
+
+    return guildSubscriptions.flat();
 }
 
 /**
@@ -580,7 +580,8 @@ export async function processReleaseNotification(
         return;
     }
 
-    const releaseName = release.row.name.toLowerCase();
+    const { row } = release;
+    const releaseName = row.name.toLowerCase();
 
     try {
         // Get all active subscriptions and check for matches
@@ -588,63 +589,66 @@ export async function processReleaseNotification(
         const matchedQueries = new Set<string>();
         const notificationBatches = new Map<string, Set<string>>();
 
-        const isTestRelease = release.row.id === 999_999;
+        const isTestRelease = row.id === 999_999;
 
-        for (const subscription of subscriptions) {
-            const { guildId, channelId, query, users } = subscription;
+        // Each subscription is a unique guild+query pair, so dedupe checks can run in parallel
+        await Promise.all(
+            subscriptions.map(async (subscription) => {
+                const { guildId, channelId, query, users } = subscription;
 
-            // Check if the query matches the release name
-            if (isQueryMatch(query, releaseName)) {
+                // Check if the query matches the release name
+                if (!isQueryMatch(query, releaseName)) {
+                    return;
+                }
+
                 const shouldNotify = isTestRelease
                     ? true
                     : await getLastSeenForGuildQuery(guildId, query).then(({ preAt: lastPreAt }) =>
-                          typeof lastPreAt === 'number' ? release.row.preAt > lastPreAt : true
+                          typeof lastPreAt === 'number' ? row.preAt > lastPreAt : true
                       );
 
                 if (shouldNotify) {
                     matchedQueries.add(`${guildId}:${query}`);
                     if (!isTestRelease) {
-                        await setLastSeenForGuildQuery(guildId, query, release.row);
+                        await setLastSeenForGuildQuery(guildId, query, row);
                     }
 
                     const batchKey = `${channelId}:${query}`;
-                    if (!notificationBatches.has(batchKey)) {
-                        notificationBatches.set(batchKey, new Set());
+                    let batch = notificationBatches.get(batchKey);
+                    if (!batch) {
+                        batch = new Set();
+                        notificationBatches.set(batchKey, batch);
                     }
 
                     for (const userId of users) {
-                        notificationBatches.get(batchKey)!.add(userId);
+                        batch.add(userId);
                     }
                 } else {
                     console.log(
                         `${'>>'.blue} [DEDUPE] `.white +
-                            `Skipping duplicate for query "${query}": ${release.row.name}`.blue
+                            `Skipping duplicate for query "${query}": ${row.name}`.blue
                     );
                 }
-            }
-        }
+            })
+        );
 
         // Send batched notifications
-        for (const [batchKey, userIds] of notificationBatches) {
-            const separator = batchKey.indexOf(':');
-            if (separator === -1) {
-                continue;
-            }
-            const channelId = batchKey.slice(0, separator);
-            const query = batchKey.slice(separator + 1);
-            await sendBatchedNotification(
-                client,
-                channelId,
-                Array.from(userIds),
-                release.row,
-                query
-            );
-        }
+        await Promise.all(
+            Array.from(notificationBatches, ([batchKey, userIds]) => {
+                const separator = batchKey.indexOf(':');
+                if (separator === -1) {
+                    return Promise.resolve();
+                }
+                const channelId = batchKey.slice(0, separator);
+                const query = batchKey.slice(separator + 1);
+                return sendBatchedNotification(client, channelId, Array.from(userIds), row, query);
+            })
+        );
 
         if (matchedQueries.size > 0) {
             console.log(
                 `${'>>'.green} [NOTIFICATION] `.white +
-                    `Found ${matchedQueries.size} matching queries for: ${release.row.name}`.green
+                    `Found ${matchedQueries.size} matching queries for: ${row.name}`.green
             );
         }
     } catch (error) {
@@ -763,16 +767,16 @@ export async function testNotification(client: Client, releaseName: string): Pro
     const mockRelease = {
         action: 'insert' as const,
         row: {
+            cat: 'X264-HD-720P',
+            files: 15,
+            genre: '',
             id: 999_999,
             name: releaseName,
-            team: 'TEST',
-            cat: 'X264-HD-720P',
-            genre: '',
-            url: '',
-            size: 2048,
-            files: 15,
-            preAt,
             nuke: null,
+            preAt,
+            size: 2048,
+            team: 'TEST',
+            url: '',
         },
     };
 
@@ -804,7 +808,7 @@ export async function unsubscribeFromQuery(
         // Find subscriptions matching this query
         const matchingSubs = userSubs.filter((sub) => sub.query === query);
         if (matchingSubs.length === 0) {
-            return { success: false, message: '❌ You are not subscribed to this query.' };
+            return { message: '❌ You are not subscribed to this query.', success: false };
         }
 
         // Use the first matching subscription's ID to delete
@@ -812,15 +816,15 @@ export async function unsubscribeFromQuery(
 
         if (result.success) {
             return {
-                success: true,
                 message: `✅ Unsubscribed from "${query}"`,
+                success: true,
             };
         }
 
         return result;
     } catch (error) {
         console.error('Error unsubscribing from query:', error);
-        return { success: false, message: '❌ Failed to unsubscribe. Try again later.' };
+        return { message: '❌ Failed to unsubscribe. Try again later.', success: false };
     }
 }
 
@@ -849,7 +853,7 @@ export async function deleteSubscription(
         // Find the subscription to delete
         const subToDelete = userSubs.find((sub) => sub.id === subscriptionId);
         if (!subToDelete) {
-            return { success: false, message: '❌ Subscription not found.' };
+            return { message: '❌ Subscription not found.', success: false };
         }
 
         // Remove from user subscriptions
@@ -881,12 +885,12 @@ export async function deleteSubscription(
         }
 
         return {
-            success: true,
             deletedQuery: subToDelete.query,
             message: `✅ Stopped monitoring "${subToDelete.query}"`,
+            success: true,
         };
     } catch (error) {
         console.error('Error deleting subscription:', error);
-        return { success: false, message: '❌ Failed to delete subscription. Try again later.' };
+        return { message: '❌ Failed to delete subscription. Try again later.', success: false };
     }
 }

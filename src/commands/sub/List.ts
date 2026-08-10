@@ -104,7 +104,7 @@ export class List {
             await interaction.editReply('❌ This command can only be used in a server.');
             return;
         }
-        const guildId = interaction.guildId;
+        const { guildId } = interaction;
         const userId = interaction.user.id;
         const subs = await this.fetchUserSubs(guildId, userId);
         const container = this.buildPageContainer(guildId, userId, subs, 0);
