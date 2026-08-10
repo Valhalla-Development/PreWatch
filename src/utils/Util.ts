@@ -304,13 +304,42 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
     const wsUrl = `${config.API_URL}/ws`;
     const ws = new WebSocket(wsUrl);
 
+    // Heartbeat: a WebSocket can die silently (idle timeout, NAT drop, network blip)
+    // without ever emitting 'close', which means the auto-reconnect below never runs
+    // and the bot stops receiving releases while appearing healthy. Ping the server
+    // regularly; if it stops answering, terminate() the socket so 'close' fires and
+    // the existing reconnect logic takes over.
+    const HEARTBEAT_INTERVAL_MS = 30_000;
+    let isAlive = true;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+
     ws.on('open', () => {
         console.log(
             `${'>>'.green} [WEBSOCKET] `.white + 'Connected to real-time release stream'.green
         );
+
+        isAlive = true;
+        heartbeat = setInterval(() => {
+            if (!isAlive) {
+                console.warn(
+                    `${'>>'.yellow} [WEBSOCKET] `.white +
+                        'No pong received, terminating stale connection...'.yellow
+                );
+                ws.terminate();
+                return;
+            }
+            isAlive = false;
+            ws.ping();
+        }, HEARTBEAT_INTERVAL_MS);
+    });
+
+    ws.on('pong', () => {
+        isAlive = true;
     });
 
     ws.on('message', (data: WebSocket.Data) => {
+        // Any traffic proves the connection is alive
+        isAlive = true;
         try {
             const release = JSON.parse(data.toString());
 
@@ -334,6 +363,11 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
     });
 
     ws.on('close', (code, reason) => {
+        if (heartbeat) {
+            clearInterval(heartbeat);
+            heartbeat = undefined;
+        }
+
         console.warn(
             `${'>>'.yellow} [WEBSOCKET] `.white + `Connection closed: ${code} - ${reason}`.yellow
         );
