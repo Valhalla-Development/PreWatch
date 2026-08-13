@@ -13,10 +13,13 @@ import { ButtonComponent, type Client, Discord, Slash, SlashOption } from 'disco
 import { config } from '../../config/Config.js';
 import {
     addQuerySubscriber,
+    areWatchQueriesSimilar,
     deleteSubscription,
     getAlertsChannelForGuild,
     handleError,
+    isWatchQueryUsable,
     keyv,
+    parseWatchQuery,
 } from '../../utils/Util.js';
 
 interface Subscription {
@@ -112,10 +115,10 @@ export class Add {
             .addTextDisplayComponents(text)
             .addActionRowComponents((row) => row.addComponents(undoBtn));
     }
-    @Slash({ description: 'Add a query to monitor' })
+    @Slash({ description: 'Add a scene query to monitor (tokens, team:, cat:, quotes)' })
     async add(
         @SlashOption({
-            description: 'Add a query to monitor',
+            description: 'e.g. breaking bad 1080p  |  team:SPARKS  |  "breaking.bad" cat:X264',
             maxLength: 50,
             minLength: 4,
             name: 'query',
@@ -148,39 +151,15 @@ export class Add {
                 return;
             }
 
-            // Check for similar queries
-            const normalizedQuery = query
-                .toLowerCase()
-                .replace(/[.\-_]/g, ' ')
-                .trim();
-            const similarSubs = userSubs.filter((sub) => {
-                const normalizedSub = sub.query
-                    .toLowerCase()
-                    .replace(/[.\-_]/g, ' ')
-                    .trim();
-
-                // Check for substantial overlap
-                const queryWords = normalizedQuery.split(/\s+/).filter((w) => w.length >= 3);
-                const subWords = normalizedSub.split(/\s+/).filter((w) => w.length >= 3);
-
-                if (queryWords.length === 0 || subWords.length === 0) {
-                    return false;
-                }
-
-                const commonWords = queryWords.filter((word) =>
-                    subWords.some(
-                        (subWord) =>
-                            word === subWord ||
-                            (word.length >= 5 &&
-                                subWord.length >= 5 &&
-                                (word.includes(subWord) || subWord.includes(word)))
-                    )
+            const parsedQuery = parseWatchQuery(query);
+            if (!isWatchQueryUsable(parsedQuery)) {
+                await interaction.editReply(
+                    '❌ Query has nothing to match. Use title tokens, `team:GROUP`, `cat:CATEGORY`, or a quoted phrase.'
                 );
+                return;
+            }
 
-                const similarity =
-                    commonWords.length / Math.min(queryWords.length, subWords.length);
-                return similarity >= 0.6; // 60% similarity threshold
-            });
+            const similarSubs = userSubs.filter((sub) => areWatchQueriesSimilar(query, sub.query));
 
             if (similarSubs.length > 0) {
                 const similarQueries = similarSubs.map((sub) => `"${sub.query}"`).join(', ');
