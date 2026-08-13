@@ -97,6 +97,24 @@ export async function setLastSeenForGuildQuery(
     await keyv.set(key, payload);
 }
 
+/**
+ * Records a watermark for a new watch so poll/catch-up will not dump history.
+ */
+export async function seedLastSeenIfAbsent(
+    guildId: string,
+    query: string,
+    preAt: number
+): Promise<void> {
+    const existing = await getLastSeenForGuildQuery(guildId, query);
+    if (typeof existing.preAt === 'number') {
+        return;
+    }
+    const key = getLastSeenKey(guildId, query);
+    const payload: LastSeen = { preAt };
+    lastSeenCache.set(key, payload);
+    await keyv.set(key, payload);
+}
+
 // Serialize lastSeen check → send → ack per guild+query so overlapping
 // WebSocket/poll inserts cannot both pass the watermark and double-notify.
 const lastSeenLocks = new Map<string, Promise<void>>();
@@ -419,6 +437,21 @@ function readSubscriptionsFromIndex(client: Client): ActiveSubscription[] {
     return results;
 }
 
+function getIndexedQueryWatchers(client: Client, query: string): string[] {
+    const key = normalizeQueryStorageKey(query);
+    const guildIds: string[] = [];
+    for (const [guildId, guild] of subscriptionIndex) {
+        if (!(client.guilds.cache.has(guildId) && guild.channelId)) {
+            continue;
+        }
+        const entry = guild.queries.get(key);
+        if (entry && entry.users.size > 0) {
+            guildIds.push(guildId);
+        }
+    }
+    return guildIds;
+}
+
 function getIndexedPollQueries(client: Client): string[] {
     const queries = new Set<string>();
     for (const [guildId, guild] of subscriptionIndex) {
@@ -726,6 +759,14 @@ export async function checkApiHealth(): Promise<boolean> {
     }
 }
 
+let releaseStreamUp = false;
+let pollCatchUpRequested = false;
+let wakePollLoop: (() => void) | undefined;
+
+const POLL_PAGE_SIZE = 20;
+const POLL_MAX_PAGES = 5;
+const POLL_SAFE_REQUESTS_PER_MINUTE = 30;
+
 /**
  * Connects to the WebSocket for real-time release updates.
  * @param onMessage - Callback function to handle incoming release data
@@ -750,6 +791,9 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
         );
 
         isAlive = true;
+        releaseStreamUp = true;
+        pollCatchUpRequested = true;
+        wakePollLoop?.();
         heartbeat = setInterval(() => {
             if (!isAlive) {
                 console.warn(
@@ -803,6 +847,9 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
             `${'>>'.yellow} [WEBSOCKET] `.white + `Connection closed: ${code} - ${reason}`.yellow
         );
 
+        releaseStreamUp = false;
+        wakePollLoop?.();
+
         // Auto-reconnect after 5 seconds
         setTimeout(() => {
             console.log(`${'>>'.cyan} [WEBSOCKET] `.white + 'Attempting to reconnect...'.cyan);
@@ -814,33 +861,56 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
 }
 
 /**
- * Poll recent releases for each subscribed query as a fallback if websocket misses.
- * Respects API rate limits via env-configured caps and intervals.
+ * Polls PreDB only while the WebSocket is down, plus one catch-up after
+ * connect/reconnect. Pages by lastSeen watermark instead of a fixed last-5.
  */
 export async function startPollingFallback(client: Client, signal?: AbortSignal): Promise<void> {
     if (!config.POLLING_ENABLED) {
         return;
     }
 
-    const SAFE_REQUESTS_PER_MINUTE = 30;
     let lastEffectiveIntervalSec = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let running = false;
+    let retrigger = false;
+
+    const schedule = (ms: number) => {
+        if (timer) {
+            clearTimeout(timer);
+        }
+        timer = setTimeout(() => {
+            loop().catch((error) => {
+                console.error(`${'>>'.red} [POLL] `.white + `Loop error: ${error}`.red);
+            });
+        }, ms);
+    };
+
+    wakePollLoop = () => {
+        if (running) {
+            retrigger = true;
+            return;
+        }
+        schedule(0);
+    };
 
     const loop = async () => {
+        if (running) {
+            return;
+        }
+        running = true;
         try {
+            const shouldFetch = !releaseStreamUp || pollCatchUpRequested;
             const allQueries = indexHydrated
                 ? getIndexedPollQueries(client)
                 : await loadPollQueriesFromKeyv(client);
 
-            // Compute interval that allows polling ALL queries each tick while respecting 30 rpm
             const baseIntervalSec = config.POLLING_INTERVAL_SECONDS;
             const requiredIntervalSec =
                 allQueries.length > 0
-                    ? Math.ceil((allQueries.length * 60) / SAFE_REQUESTS_PER_MINUTE)
+                    ? Math.ceil((allQueries.length * 60) / POLL_SAFE_REQUESTS_PER_MINUTE)
                     : baseIntervalSec;
             const effectiveIntervalSec = Math.max(baseIntervalSec, requiredIntervalSec);
 
-            // Log when interval changes or on first run
             if (effectiveIntervalSec !== lastEffectiveIntervalSec) {
                 const rpm =
                     allQueries.length > 0
@@ -851,61 +921,39 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
                         `Interval set to ${effectiveIntervalSec}s for ${allQueries.length} queries (~${rpm} req/min)`
                             .cyan
                 );
-                if (effectiveIntervalSec > baseIntervalSec) {
-                    console.warn(
-                        `${'>>'.yellow} [POLL] `.white +
-                            `Auto-scaled interval from ${baseIntervalSec}s to ${effectiveIntervalSec}s to respect API budget`
-                                .yellow
-                    );
-                }
                 lastEffectiveIntervalSec = effectiveIntervalSec;
             }
 
-            if (allQueries.length === 0) {
-                // Schedule next check using base interval if no queries
-                timer = setTimeout(loop, baseIntervalSec * 1000);
+            if (!shouldFetch) {
+                schedule(baseIntervalSec * 1000);
                 return;
             }
 
-            // Poll ALL eligible queries this tick (interval has been scaled to fit budget)
-            // Track start to schedule next run accurately
-            const tickStartMs = Date.now();
-
-            // Pace requests to avoid burst rate-limits within the tick
-            const perRequestDelayMs = Math.ceil(60_000 / SAFE_REQUESTS_PER_MINUTE);
-            for (const query of allQueries) {
-                const search = pollSearchString(query);
-                const url = `${config.API_URL}/?q=${encodeURIComponent(search)}&count=5`;
-
-                try {
-                    // biome-ignore lint/performance/noAwaitInLoops: requests are intentionally sequential and paced to respect the API rate limit
-                    const resp = await axios.get(url);
-                    const rows = resp?.data?.data?.rows as Release[] | undefined;
-                    if (!rows || rows.length === 0) {
-                        continue;
-                    }
-
-                    const sortedRows = [...rows].sort((a, b) => a.preAt - b.preAt);
-                    for (const row of sortedRows) {
-                        const wsLike: WebSocketMessage = { action: 'insert', row };
-                        // biome-ignore lint/performance/noAwaitInLoops: releases must be processed in preAt order so dedupe state stays consistent
-                        await processReleaseNotification(client, wsLike);
-                    }
-                } catch (err) {
-                    console.warn(
-                        `${'>>'.yellow} [POLL] `.white +
-                            `Failed query for "${query}": ${err}`.yellow
-                    );
-                }
-
-                // Space out requests to stay under rolling 30 req/min budget
-                await new Promise((resolve) => setTimeout(resolve, perRequestDelayMs));
+            if (allQueries.length === 0) {
+                pollCatchUpRequested = false;
+                schedule(baseIntervalSec * 1000);
+                return;
             }
 
-            // Schedule next run considering time already spent in this tick
+            const reason = releaseStreamUp ? 'catch-up after WebSocket connect' : 'WebSocket down';
+            console.log(
+                `${'>>'.cyan} [POLL] `.white +
+                    `Running ${allQueries.length} queries (${reason})`.cyan
+            );
+
+            const tickStartMs = Date.now();
+            const perRequestDelayMs = Math.ceil(60_000 / POLL_SAFE_REQUESTS_PER_MINUTE);
+
+            for (const query of allQueries) {
+                // biome-ignore lint/performance/noAwaitInLoops: requests are intentionally sequential and paced to respect the API rate limit
+                await pollQueryCatchUp(client, query, perRequestDelayMs);
+            }
+
+            pollCatchUpRequested = false;
             const elapsedMs = Date.now() - tickStartMs;
-            const targetTickMs = lastEffectiveIntervalSec * 1000;
-            const nextDelayMs = Math.max(0, targetTickMs - elapsedMs);
+            const nextDelayMs = releaseStreamUp
+                ? Math.max(baseIntervalSec * 1000, 0)
+                : Math.max(0, effectiveIntervalSec * 1000 - elapsedMs);
 
             console.log(
                 `${'>>'.green} [POLL] `.white +
@@ -913,15 +961,19 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
                         .green
             );
 
-            timer = setTimeout(loop, nextDelayMs);
+            schedule(nextDelayMs);
         } catch (error) {
             console.error(`${'>>'.red} [POLL] `.white + `Loop error: ${error}`.red);
-            // In case of error, try again after base interval
-            timer = setTimeout(loop, config.POLLING_INTERVAL_SECONDS * 1000);
+            schedule(config.POLLING_INTERVAL_SECONDS * 1000);
+        } finally {
+            running = false;
+            if (retrigger) {
+                retrigger = false;
+                schedule(0);
+            }
         }
     };
 
-    // Kick off polling
     await loop();
 
     if (signal) {
@@ -929,8 +981,112 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
             if (timer) {
                 clearTimeout(timer);
             }
+            wakePollLoop = undefined;
         });
     }
+}
+
+async function oldestWatermarkForQuery(
+    guildIds: string[],
+    query: string
+): Promise<LastSeen | undefined> {
+    const seenList = await Promise.all(
+        guildIds.map((guildId) => getLastSeenForGuildQuery(guildId, query))
+    );
+    const withMark = seenList.filter((seen) => typeof seen.preAt === 'number');
+    if (withMark.length === 0) {
+        return;
+    }
+    return withMark.reduce((oldest, seen) =>
+        (seen.preAt ?? 0) < (oldest.preAt ?? 0) ? seen : oldest
+    );
+}
+
+async function fetchReleasesNewerThan(
+    search: string,
+    watermark: LastSeen,
+    perRequestDelayMs: number
+): Promise<Release[]> {
+    const collected: Release[] = [];
+    const offsets = Array.from({ length: POLL_MAX_PAGES }, (_, page) => page * POLL_PAGE_SIZE);
+
+    for (const offset of offsets) {
+        if (offset > 0) {
+            // biome-ignore lint/performance/noAwaitInLoops: pages are paced to stay under the API rate limit
+            await delay(perRequestDelayMs);
+        }
+
+        const url = `${config.API_URL}/?q=${encodeURIComponent(search)}&count=${POLL_PAGE_SIZE}&offset=${offset}`;
+        try {
+            const resp = await axios.get(url);
+            const rows = resp?.data?.data?.rows as Release[] | undefined;
+            if (!rows || rows.length === 0) {
+                break;
+            }
+
+            let hitWatermark = false;
+            for (const row of rows) {
+                if (isAlreadySeen(watermark, row)) {
+                    hitWatermark = true;
+                    break;
+                }
+                collected.push(row);
+            }
+
+            if (hitWatermark || rows.length < POLL_PAGE_SIZE) {
+                break;
+            }
+            if (offset >= (POLL_MAX_PAGES - 1) * POLL_PAGE_SIZE) {
+                console.warn(
+                    `${'>>'.yellow} [POLL] `.white +
+                        `Hit ${POLL_MAX_PAGES} page cap for "${search}"; older unseen releases may remain`
+                            .yellow
+                );
+            }
+        } catch (err) {
+            console.warn(
+                `${'>>'.yellow} [POLL] `.white +
+                    `Failed page offset ${offset} for "${search}": ${err}`.yellow
+            );
+            break;
+        }
+    }
+
+    return collected.sort((a, b) => a.preAt - b.preAt);
+}
+
+async function pollQueryCatchUp(
+    client: Client,
+    query: string,
+    perRequestDelayMs: number
+): Promise<void> {
+    const watchers = getIndexedQueryWatchers(client, query);
+    const now = Math.floor(Date.now() / 1000);
+    const watermark = await oldestWatermarkForQuery(watchers, query);
+
+    for (const guildId of watchers) {
+        // biome-ignore lint/performance/noAwaitInLoops: seed each guild that has never been watermarked
+        await seedLastSeenIfAbsent(guildId, query, now);
+    }
+
+    if (!watermark) {
+        await delay(perRequestDelayMs);
+        return;
+    }
+
+    const search = pollSearchString(query);
+    try {
+        const rows = await fetchReleasesNewerThan(search, watermark, perRequestDelayMs);
+        for (const row of rows) {
+            const wsLike: WebSocketMessage = { action: 'insert', row };
+            // biome-ignore lint/performance/noAwaitInLoops: releases must be processed in preAt order so dedupe state stays consistent
+            await processReleaseNotification(client, wsLike);
+        }
+    } catch (err) {
+        console.warn(`${'>>'.yellow} [POLL] `.white + `Failed query for "${query}": ${err}`.yellow);
+    }
+
+    await delay(perRequestDelayMs);
 }
 
 /**
@@ -1004,6 +1160,7 @@ export async function addQuerySubscriber(
         await addToGlobalQueries(guildId, query);
     }
     indexAddUser(guildId, query, userId);
+    await seedLastSeenIfAbsent(guildId, query, Math.floor(Date.now() / 1000));
 }
 
 /**
