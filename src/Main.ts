@@ -97,7 +97,12 @@ async function run() {
      */
     const loadSequentially = async () => {
         try {
-            await importx(`${dirname(import.meta.url)}/{events,commands}/**/*.{ts,js}`);
+            await importx(
+                `${dirname(import.meta.url)}/{events,commands/miscellaneous,commands/sub}/**/*.{ts,js}`
+            );
+            if (isDev) {
+                await importx(`${dirname(import.meta.url)}/commands/hidden/**/*.{ts,js}`);
+            }
             await sleep(time);
             if (!isDev) {
                 client.cluster = new ClusterClient(client);
