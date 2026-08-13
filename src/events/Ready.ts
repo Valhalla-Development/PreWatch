@@ -2,14 +2,10 @@ import { type Client, Discord, Once } from 'discordx';
 import si from 'systeminformation';
 import '@colors/colors';
 import { version } from 'discord.js';
-import {
-    checkApiHealth,
-    connectToReleaseStream,
-    processReleaseNotification,
-    rebuildSubscriptionIndex,
-    startPollingFallback,
-    updateStatus,
-} from '../utils/Util.js';
+import { checkApiHealth, connectToReleaseStream, startPollingFallback } from '../utils/Monitor.js';
+import { processReleaseNotification } from '../utils/Notify.js';
+import { rebuildSubscriptionIndex } from '../utils/Subscriptions.js';
+import { updateStatus } from '../utils/Util.js';
 
 /**
  * Discord.js Ready event handler.

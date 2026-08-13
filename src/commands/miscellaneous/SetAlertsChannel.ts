@@ -10,7 +10,7 @@ import {
     TextDisplayBuilder,
 } from 'discord.js';
 import { type Client, Discord, SelectMenuComponent, Slash } from 'discordx';
-import { getAlertsChannelForGuild, setAlertsChannelForGuild } from '../../utils/Util.js';
+import { getAlertsChannelForGuild, setAlertsChannelForGuild } from '../../utils/Subscriptions.js';
 
 const ALERTS_CHANNEL_SELECT_ID = 'alerts_channel_select';
 

@@ -2,7 +2,8 @@ import { ChannelType, codeBlock, EmbedBuilder, MessageFlags } from 'discord.js';
 import { type ArgsOf, type Client, Discord, On } from 'discordx';
 import moment from 'moment';
 import { config } from '../config/Config.js';
-import { handleError, reversedRainbow, unsubscribeFromQuery } from '../utils/Util.js';
+import { unsubscribeFromQuery } from '../utils/Subscriptions.js';
+import { handleError, reversedRainbow } from '../utils/Util.js';
 
 @Discord()
 export class InteractionCreate {

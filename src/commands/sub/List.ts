@@ -10,7 +10,8 @@ import {
     TextDisplayBuilder,
 } from 'discord.js';
 import { ButtonComponent, Discord, Slash } from 'discordx';
-import { deleteSubscription, keyv } from '../../utils/Util.js';
+import { keyv } from '../../utils/Store.js';
+import { deleteSubscription } from '../../utils/Subscriptions.js';
 
 @Discord()
 @Category('Sub')
