@@ -12,7 +12,7 @@ import {
 import { ButtonComponent, type Client, Discord, Slash, SlashOption } from 'discordx';
 import { config } from '../../config/Config.js';
 import {
-    addToGlobalQueries,
+    addQuerySubscriber,
     deleteSubscription,
     getAlertsChannelForGuild,
     handleError,
@@ -36,10 +36,9 @@ export class Add {
         query: string;
         userId: string;
         subscriptionId: string;
-        queryKey: string;
         userKey: string;
     }): Promise<{ success: boolean; message?: string; userSubs?: Subscription[] }> {
-        const { guildId, query, userId, subscriptionId, queryKey, userKey } = data;
+        const { guildId, query, userId, subscriptionId, userKey } = data;
         try {
             // Get existing user subscriptions
             const userSubs: Subscription[] = (await keyv.get(userKey)) || [];
@@ -54,16 +53,7 @@ export class Add {
             // Update user subscriptions
             userSubs.push(newSub);
             await keyv.set(userKey, userSubs);
-
-            // Update query subscriptions
-            const queryUsers: string[] = (await keyv.get(queryKey)) || [];
-            if (!queryUsers.includes(userId)) {
-                queryUsers.push(userId);
-                await keyv.set(queryKey, queryUsers);
-
-                // Add to global queries tracking for notifications
-                await addToGlobalQueries(guildId, query);
-            }
+            await addQuerySubscriber(guildId, query, userId);
 
             return { success: true, userSubs };
         } catch (error) {
@@ -146,7 +136,6 @@ export class Add {
         const { guildId } = interaction;
         const userId = interaction.user.id;
         const subscriptionId = `${userId}-${Date.now()}`;
-        const queryKey = `query:${guildId}:${query.toLowerCase().replace(/\s+/g, '+').trim()}`;
         const userKey = `user:${guildId}:${userId}`;
 
         try {
@@ -248,7 +237,6 @@ export class Add {
             const result = await this.createSubscription({
                 guildId,
                 query,
-                queryKey,
                 subscriptionId,
                 userId,
                 userKey,
@@ -333,14 +321,12 @@ export class Add {
 
         // Reconstruct values
         const subscriptionId = `${userId}-${Date.now()}`;
-        const queryKey = `query:${guildId}:${query.toLowerCase().replace(/\s+/g, '+').trim()}`;
         const userKey = `user:${guildId}:${userId}`;
 
         // Create the subscription using helper function
         const result = await this.createSubscription({
             guildId,
             query,
-            queryKey,
             subscriptionId,
             userId,
             userKey,

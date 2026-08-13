@@ -6,6 +6,7 @@ import {
     checkApiHealth,
     connectToReleaseStream,
     processReleaseNotification,
+    rebuildSubscriptionIndex,
     startPollingFallback,
     updateStatus,
 } from '../utils/Util.js';
@@ -92,6 +93,8 @@ export class Ready {
 
         // Set activity
         updateStatus(client);
+
+        await rebuildSubscriptionIndex(client);
 
         // Check API health
         const isApiHealthy = await checkApiHealth();
