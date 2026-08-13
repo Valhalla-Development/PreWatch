@@ -107,12 +107,6 @@ export class Ready {
             });
         }
 
-        // Delay for 500ms to ensure the release stream is connected
-        await new Promise<void>((resolve) => {
-            setTimeout(resolve, 500);
-        });
-
-        // Start polling fallback if enabled
         await startPollingFallback(client);
     }
 }
