@@ -5,6 +5,7 @@ import {
     ChannelType,
     ContainerBuilder,
     codeBlock,
+    DiscordAPIError,
     EmbedBuilder,
     type Message,
     MessageFlags,
@@ -86,6 +87,49 @@ export async function setLastSeenForGuildQuery(
     const key = getLastSeenKey(guildId, query);
     const payload: LastSeen = { id: release.id, preAt: release.preAt };
     await keyv.set(key, payload);
+}
+
+// Serialize lastSeen check → send → ack per guild+query so overlapping
+// WebSocket/poll inserts cannot both pass the watermark and double-notify.
+const lastSeenLocks = new Map<string, Promise<void>>();
+
+function withLastSeenLock<T>(guildId: string, query: string, fn: () => Promise<T>): Promise<T> {
+    const key = getLastSeenKey(guildId, query);
+    const previous = lastSeenLocks.get(key) ?? Promise.resolve();
+    const run = previous.then(fn);
+    lastSeenLocks.set(
+        key,
+        run.then(
+            () => undefined,
+            () => undefined
+        )
+    );
+    return run;
+}
+
+function isAlreadySeen(lastSeen: LastSeen, release: Release): boolean {
+    if (typeof lastSeen.id === 'number' && lastSeen.id === release.id) {
+        return true;
+    }
+    return typeof lastSeen.preAt === 'number' && release.preAt <= lastSeen.preAt;
+}
+
+const NOTIFY_SEND_ATTEMPTS = 3;
+const NOTIFY_RETRY_DELAY_MS = 1000;
+
+function isNonRetryableSendError(error: unknown): boolean {
+    if (!(error instanceof DiscordAPIError)) {
+        return false;
+    }
+    return (
+        error.status === 400 || error.status === 401 || error.status === 403 || error.status === 404
+    );
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
 }
 
 // ---------------------------
@@ -618,64 +662,57 @@ export async function processReleaseNotification(
     const releaseName = row.name.toLowerCase();
 
     try {
-        // Get all active subscriptions and check for matches
         const subscriptions = await getAllActiveSubscriptions(client);
         const matchedQueries = new Set<string>();
-        const notificationBatches = new Map<string, Set<string>>();
-
         const isTestRelease = row.id === 999_999;
 
-        // Each subscription is a unique guild+query pair, so dedupe checks can run in parallel
+        // Different guild+query pairs can notify in parallel. The same query is
+        // serialized so lastSeen cannot race across overlapping WS/poll inserts.
         await Promise.all(
             subscriptions.map(async (subscription) => {
                 const { guildId, channelId, query, users } = subscription;
 
-                // Check if the query matches the release name
                 if (!isQueryMatch(query, releaseName)) {
                     return;
                 }
 
-                const shouldNotify = isTestRelease
-                    ? true
-                    : await getLastSeenForGuildQuery(guildId, query).then(({ preAt: lastPreAt }) =>
-                          typeof lastPreAt === 'number' ? row.preAt > lastPreAt : true
-                      );
+                await withLastSeenLock(guildId, query, async () => {
+                    const shouldNotify = isTestRelease
+                        ? true
+                        : !(await getLastSeenForGuildQuery(guildId, query).then((lastSeen) =>
+                              isAlreadySeen(lastSeen, row)
+                          ));
 
-                if (shouldNotify) {
+                    if (!shouldNotify) {
+                        console.log(
+                            `${'>>'.blue} [DEDUPE] `.white +
+                                `Skipping duplicate for query "${query}": ${row.name}`.blue
+                        );
+                        return;
+                    }
+
+                    const sent = await sendBatchedNotification(
+                        client,
+                        channelId,
+                        users,
+                        row,
+                        query
+                    );
+
+                    if (!sent) {
+                        console.warn(
+                            `${'>>'.yellow} [NOTIFICATION] `.white +
+                                `Send failed for query "${query}"; lastSeen left unchanged so this release can retry`
+                                    .yellow
+                        );
+                        return;
+                    }
+
                     matchedQueries.add(`${guildId}:${query}`);
                     if (!isTestRelease) {
                         await setLastSeenForGuildQuery(guildId, query, row);
                     }
-
-                    const batchKey = `${channelId}:${query}`;
-                    let batch = notificationBatches.get(batchKey);
-                    if (!batch) {
-                        batch = new Set();
-                        notificationBatches.set(batchKey, batch);
-                    }
-
-                    for (const userId of users) {
-                        batch.add(userId);
-                    }
-                } else {
-                    console.log(
-                        `${'>>'.blue} [DEDUPE] `.white +
-                            `Skipping duplicate for query "${query}": ${row.name}`.blue
-                    );
-                }
-            })
-        );
-
-        // Send batched notifications
-        await Promise.all(
-            Array.from(notificationBatches, ([batchKey, userIds]) => {
-                const separator = batchKey.indexOf(':');
-                if (separator === -1) {
-                    return Promise.resolve();
-                }
-                const channelId = batchKey.slice(0, separator);
-                const query = batchKey.slice(separator + 1);
-                return sendBatchedNotification(client, channelId, Array.from(userIds), row, query);
+                });
             })
         );
 
@@ -692,11 +729,8 @@ export async function processReleaseNotification(
 }
 
 /**
- * Sends a batched notification to multiple users about a matching release
- * @param client - Discord client
- * @param userIds - Array of user IDs to notify
- * @param release - Release data
- * @param matchedQuery - The query that matched
+ * Sends a batched notification to multiple users about a matching release.
+ * @returns true if Discord accepted the message (caller may then ack lastSeen)
  */
 export async function sendBatchedNotification(
     client: Client,
@@ -704,9 +738,9 @@ export async function sendBatchedNotification(
     userIds: string[],
     release: Release,
     matchedQuery: string
-): Promise<void> {
+): Promise<boolean> {
     if (userIds.length === 0) {
-        return;
+        return false;
     }
 
     try {
@@ -734,7 +768,11 @@ export async function sendBatchedNotification(
             (await client.channels.fetch(channelId).catch(() => null));
         const canSendToChannel = channel?.isTextBased() && channel && 'send' in channel;
         if (!canSendToChannel) {
-            return;
+            console.error(
+                `${'>>'.red} [NOTIFICATION] `.white +
+                    `Cannot send to channel ${channelId}: missing or not text-based`.red
+            );
+            return false;
         }
         const userIdsToPing = Array.from(new Set(userIds));
         const pings = userIdsToPing.map((id) => `<@${id}>`).join(' ');
@@ -759,35 +797,45 @@ export async function sendBatchedNotification(
             .setStyle(ButtonStyle.Danger);
         containerWithPings.addActionRowComponents((row) => row.addComponents(unsubButtonChannel));
 
-        await (channel as TextChannel)
-            .send({
-                components: [containerWithPings],
-                flags: MessageFlags.IsComponentsV2,
-            })
-            .then(() => {
+        const sendAttempt = async (attempt: number): Promise<boolean> => {
+            try {
+                await (channel as TextChannel).send({
+                    components: [containerWithPings],
+                    flags: MessageFlags.IsComponentsV2,
+                });
                 console.log(
                     `${'>>'.green} [NOTIFICATION] `.white +
                         `Sent to channel ${channel.id} (${userIdsToPing.length} users)`.green
                 );
-            })
-            .catch(async (error: unknown) => {
+                console.log(
+                    `${'>>'.green} [NOTIFICATION] `.white +
+                        `Notified ${userIdsToPing.length} users about: ${release.name} (query: ${matchedQuery})`
+                            .green
+                );
+                return true;
+            } catch (error) {
+                const willRetry = !isNonRetryableSendError(error) && attempt < NOTIFY_SEND_ATTEMPTS;
                 console.error(
                     `${'>>'.red} [NOTIFICATION] `.white +
-                        `Failed to send to channel ${channel.id}`.red
+                        `Failed to send to channel ${channel.id} (attempt ${attempt}/${NOTIFY_SEND_ATTEMPTS})`
+                            .red
                 );
-                await handleError(client, error);
-            });
+                if (!willRetry) {
+                    await handleError(client, error);
+                    return false;
+                }
+                await delay(NOTIFY_RETRY_DELAY_MS * attempt);
+                return sendAttempt(attempt + 1);
+            }
+        };
 
-        console.log(
-            `${'>>'.green} [NOTIFICATION] `.white +
-                `Notified ${userIds.length} users about: ${release.name} (query: ${matchedQuery})`
-                    .green
-        );
+        return sendAttempt(1);
     } catch (error) {
         console.error(
             `${'>>'.red} [NOTIFICATION] `.white + `Error sending batch notification: ${error}`.red
         );
         await handleError(client, error);
+        return false;
     }
 }
 
