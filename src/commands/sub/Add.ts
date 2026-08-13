@@ -11,16 +11,14 @@ import {
 } from 'discord.js';
 import { ButtonComponent, type Client, Discord, Slash, SlashOption } from 'discordx';
 import { config } from '../../config/Config.js';
+import { areWatchQueriesSimilar, isWatchQueryUsable, parseWatchQuery } from '../../utils/Match.js';
+import { keyv } from '../../utils/Store.js';
 import {
     addQuerySubscriber,
-    areWatchQueriesSimilar,
     deleteSubscription,
     getAlertsChannelForGuild,
-    handleError,
-    isWatchQueryUsable,
-    keyv,
-    parseWatchQuery,
-} from '../../utils/Util.js';
+} from '../../utils/Subscriptions.js';
+import { handleError } from '../../utils/Util.js';
 
 interface Subscription {
     created: number;
@@ -46,6 +44,11 @@ export class Add {
             // Get existing user subscriptions
             const userSubs: Subscription[] = (await keyv.get(userKey)) || [];
 
+            const limitMessage = this.subscriptionLimitMessage(userSubs.length);
+            if (limitMessage) {
+                return { message: limitMessage, success: false };
+            }
+
             // Create new subscription
             const newSub: Subscription = {
                 created: Date.now(),
@@ -65,6 +68,16 @@ export class Add {
         }
     }
 
+    private subscriptionLimitMessage(count: number): string | undefined {
+        if (config.MAX_SUBSCRIPTIONS_PER_USER === 0) {
+            return;
+        }
+        if (count < config.MAX_SUBSCRIPTIONS_PER_USER) {
+            return;
+        }
+        return `❌ Maximum ${config.MAX_SUBSCRIPTIONS_PER_USER} subscriptions per user. Remove some first.`;
+    }
+
     /**
      * Resolves where alerts are sent for display
      */
@@ -74,8 +87,8 @@ export class Add {
             return `> 📍 **Alerts sent to:** <#${channelId}>`;
         }
         return [
-            '> 📍 **Alerts sent to:** *No channel set for this server.*',
-            '> ⚠️ Ask an admin to run **/setalertschannel** so release alerts are posted here.',
+            '> ⚠️ **No alerts channel set — matches will not be posted.**',
+            '> Ask an admin to run **/setalertschannel** before you expect notifications.',
         ].join('\n');
     }
 
@@ -159,10 +172,17 @@ export class Add {
                 return;
             }
 
+            const limitMessage = this.subscriptionLimitMessage(userSubs.length);
+            if (limitMessage) {
+                await interaction.editReply(limitMessage);
+                return;
+            }
+
             const similarSubs = userSubs.filter((sub) => areWatchQueriesSimilar(query, sub.query));
 
             if (similarSubs.length > 0) {
                 const similarQueries = similarSubs.map((sub) => `"${sub.query}"`).join(', ');
+                const locationText = await this.getNotificationLocationText(guildId);
 
                 const confirmText = new TextDisplayBuilder().setContent(
                     [
@@ -170,6 +190,7 @@ export class Add {
                         '',
                         `> 🔎 **New query:** \`${query}\``,
                         `> 📋 **Similar existing:** \`${similarQueries}\``,
+                        locationText,
                         '',
                         '> You already monitor similar search terms. Continue anyway?',
                     ].join('\n')
@@ -198,17 +219,6 @@ export class Add {
                     components: [confirmContainer],
                     flags: MessageFlags.IsComponentsV2,
                 });
-                return;
-            }
-
-            // Check subscription limit (0 = unlimited)
-            if (
-                config.MAX_SUBSCRIPTIONS_PER_USER !== 0 &&
-                userSubs.length >= config.MAX_SUBSCRIPTIONS_PER_USER
-            ) {
-                await interaction.editReply(
-                    `❌ Maximum ${config.MAX_SUBSCRIPTIONS_PER_USER} subscriptions per user. Remove some first.`
-                );
                 return;
             }
 
