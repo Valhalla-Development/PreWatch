@@ -1,7 +1,7 @@
 import { type Client, Discord, Once } from 'discordx';
 import si from 'systeminformation';
 import '@colors/colors';
-import { version } from 'discord.js';
+import { Events, version } from 'discord.js';
 import { checkApiHealth, connectToReleaseStream, startPollingFallback } from '../utils/Monitor.js';
 import { processReleaseNotification } from '../utils/Notify.js';
 import { rebuildSubscriptionIndex } from '../utils/Subscriptions.js';
@@ -17,7 +17,7 @@ export class Ready {
      * @param client - The Discord client.
      * @returns void
      */
-    @Once({ event: 'clientReady' })
+    @Once({ event: Events.ClientReady })
     async onReady([client]: [Client]) {
         // Init slash commands
         await client.initApplicationCommands();

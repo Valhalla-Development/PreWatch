@@ -1,10 +1,21 @@
 import {
     ActivityType,
+    type ButtonInteraction,
     ChannelType,
+    type CommandInteraction,
+    ContainerBuilder,
     codeBlock,
-    EmbedBuilder,
     type Message,
+    MessageFlags,
+    type ModalSubmitInteraction,
+    PermissionsBitField,
+    SectionBuilder,
+    SeparatorSpacingSize,
+    type StringSelectMenuInteraction,
     type TextChannel,
+    TextDisplayBuilder,
+    ThumbnailBuilder,
+    type UserSelectMenuInteraction,
 } from 'discord.js';
 import type { Client } from 'discordx';
 import '@colors/colors';
@@ -22,6 +33,123 @@ export function deletableCheck(message: Message, time: number): void {
     setTimeout(() => {
         message.delete().catch((error) => console.error('Error deleting message:', error));
     }, time);
+}
+
+/**
+ * Deletes a message after a delay if the bot has Manage Messages and the message is deletable.
+ * Ignores Unknown Message (10008) races. Use `deletableCheck` to delete the bot's own messages.
+ */
+export async function messageDelete(message: Message, time: number): Promise<void> {
+    try {
+        const botMember = message.guild?.members.cache.get(message.client.user.id);
+        if (!botMember?.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+            return;
+        }
+
+        await new Promise<void>((resolve) => {
+            setTimeout(resolve, time);
+        });
+
+        if (!message.deletable) {
+            return;
+        }
+
+        await message.delete().catch((error: unknown) => {
+            const err = error as { code?: number; message?: string };
+            if (err.code === 10_008 || err.message?.includes('Unknown Message')) {
+                return;
+            }
+            throw error;
+        });
+    } catch (error) {
+        console.error('Error: Failed to delete the message:', error);
+        throw error;
+    }
+}
+
+/**
+ * Creates and sends a Components V2 message in response to an interaction.
+ */
+export async function PreWatchComponent(
+    interaction:
+        | CommandInteraction
+        | ButtonInteraction
+        | StringSelectMenuInteraction
+        | ModalSubmitInteraction
+        | UserSelectMenuInteraction,
+    type: string,
+    content: string,
+    ephemeral = false
+): Promise<void> {
+    const lowerType = type.toLowerCase();
+    const typeEmoji =
+        lowerType.includes('error') || lowerType.includes('fail')
+            ? '⛔'
+            : lowerType.includes('warn')
+              ? '⚠️'
+              : lowerType.includes('success')
+                ? '✅'
+                : 'ℹ️';
+
+    const tagLine = new TextDisplayBuilder().setContent(`**${typeEmoji} ${type}**`);
+    const contentLine = new TextDisplayBuilder().setContent(content);
+    const container = new ContainerBuilder()
+        .addTextDisplayComponents(tagLine)
+        .addSeparatorComponents((separator) => separator.setSpacing(SeparatorSpacingSize.Small))
+        .addTextDisplayComponents(contentLine);
+
+    try {
+        if (interaction.deferred) {
+            await interaction.editReply({
+                components: [container],
+                flags: MessageFlags.IsComponentsV2,
+            });
+            return;
+        }
+
+        await interaction.reply({
+            components: [container],
+            flags: ephemeral
+                ? [MessageFlags.Ephemeral, MessageFlags.IsComponentsV2]
+                : MessageFlags.IsComponentsV2,
+        });
+    } catch (error) {
+        console.error('Error sending component response:', error);
+    }
+}
+
+/**
+ * Builds a Components V2 container with a title and body text.
+ * If the body contains a `**Avatar:** https://...` line, that URL is shown as a thumbnail.
+ */
+export function PreWatchContainer(title: string, body: string): ContainerBuilder {
+    const header = new TextDisplayBuilder().setContent(`# ${title}`);
+    const lines = body.split('\n');
+    const avatarLineIndex = lines.findIndex((line) => line.startsWith('**Avatar:**'));
+    const avatarUrlRaw =
+        avatarLineIndex >= 0 ? lines[avatarLineIndex]?.replace('**Avatar:**', '').trim() : null;
+    const avatarUrl = avatarUrlRaw && /^https?:\/\//.test(avatarUrlRaw) ? avatarUrlRaw : null;
+
+    if (avatarLineIndex >= 0 && avatarUrl) {
+        lines.splice(avatarLineIndex, 1);
+    }
+
+    const contentText = lines.join('\n').trim();
+    const content = new TextDisplayBuilder().setContent(contentText.length > 0 ? contentText : '-');
+
+    const container = new ContainerBuilder()
+        .addTextDisplayComponents(header)
+        .addSeparatorComponents((separator) => separator.setSpacing(SeparatorSpacingSize.Small));
+
+    if (avatarUrl) {
+        const section = new SectionBuilder()
+            .addTextDisplayComponents(content)
+            .setThumbnailAccessory(new ThumbnailBuilder().setURL(avatarUrl));
+        container.addSectionComponents(section);
+        return container;
+    }
+
+    return container.addTextDisplayComponents(content);
 }
 
 export async function getCommandIds(
@@ -117,13 +245,13 @@ export async function handleError(client: Client, error: unknown): Promise<void>
             codeBlock('js', errorStack),
         ].join('\n');
 
-        const embed = new EmbedBuilder()
-            .setTitle('Error')
-            .setDescription(truncateDescription(fullString))
-            .setColor('#FF0000');
-
-        await channel.send({ embeds: [embed] });
+        const container = PreWatchContainer('Error', truncateDescription(fullString));
+        await channel.send({
+            allowedMentions: { parse: [] },
+            components: [container],
+            flags: MessageFlags.IsComponentsV2,
+        });
     } catch (sendError) {
-        console.error('Failed to send the error embed:', sendError);
+        console.error('Failed to send the error component message:', sendError);
     }
 }
