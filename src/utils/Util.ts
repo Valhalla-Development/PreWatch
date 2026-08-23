@@ -18,8 +18,8 @@ import {
     type UserSelectMenuInteraction,
 } from 'discord.js';
 import type { Client } from 'discordx';
-import '@colors/colors';
 import { config } from '../config/Config.js';
+import { log } from './Console.js';
 
 export function delay(ms: number): Promise<void> {
     return new Promise((resolve) => {
@@ -31,7 +31,7 @@ export const capitalise = (str: string): string => str.replace(/\b\w/g, (c) => c
 
 export function deletableCheck(message: Message, time: number): void {
     setTimeout(() => {
-        message.delete().catch((error) => console.error('Error deleting message:', error));
+        message.delete().catch((error) => log.error('Failed to delete message', error));
     }, time);
 }
 
@@ -62,7 +62,7 @@ export async function messageDelete(message: Message, time: number): Promise<voi
             throw error;
         });
     } catch (error) {
-        console.error('Error: Failed to delete the message:', error);
+        log.error('Failed to delete the message', error);
         throw error;
     }
 }
@@ -114,7 +114,7 @@ export async function PreWatchComponent(
                 : MessageFlags.IsComponentsV2,
         });
     } catch (error) {
-        console.error('Error sending component response:', error);
+        log.error('Failed to send component response', error);
     }
 }
 
@@ -170,7 +170,7 @@ export async function getCommandIds(
                 commandIds.set(cmd.name, cmd.id);
             }
         } catch (error) {
-            console.warn('Could not fetch global commands:', error);
+            log.warn('Could not fetch global commands', error);
         }
     }
 
@@ -182,14 +182,49 @@ export async function getCommandIds(
                 commandIds.set(cmd.name, cmd.id);
             }
         } catch (error) {
-            console.warn(`Could not fetch commands for guild ${guild.name}:`, error);
+            log.warn(`Could not fetch commands for guild ${guild.name}`, error);
         }
     }
 
     return Object.fromEntries(commandIds);
 }
 
+const STATUS_INTERVAL_MS = 15_000;
+let lastStatusAt = 0;
+let statusScheduled = false;
+let queuedClient: Client | undefined;
+
+/**
+ * Updates the status of the Discord client with information about guilds and users.
+ * @param client - The Discord client instance.
+ */
 export function updateStatus(client: Client) {
+    queuedClient = client;
+    const remaining = STATUS_INTERVAL_MS - (Date.now() - lastStatusAt);
+
+    if (remaining > 0) {
+        if (statusScheduled) {
+            return;
+        }
+        statusScheduled = true;
+        setTimeout(() => {
+            statusScheduled = false;
+            flushStatus();
+        }, remaining);
+        return;
+    }
+
+    flushStatus();
+}
+
+function flushStatus() {
+    const client = queuedClient;
+    queuedClient = undefined;
+    if (!client) {
+        return;
+    }
+
+    lastStatusAt = Date.now();
     client.user?.setActivity({
         name: `${client.guilds.cache.size.toLocaleString('en')} Guilds
             ${client.guilds.cache.reduce((a, b) => a + b.memberCount, 0).toLocaleString('en')} Users`,
@@ -197,19 +232,32 @@ export function updateStatus(client: Client) {
     });
 }
 
-export const reversedRainbow = (str: string): string => {
-    const colors = ['red', 'magenta', 'blue', 'green', 'yellow', 'red'] as const;
-    return str
-        .split('')
-        .map((char, i) => char[colors[i % colors.length] as keyof typeof char])
-        .join('');
-};
+export async function getTextChannel(
+    client: Client,
+    channelId: string
+): Promise<TextChannel | undefined> {
+    const cached = client.channels.cache.get(channelId);
+    if (cached?.type === ChannelType.GuildText) {
+        return cached;
+    }
+
+    try {
+        const fetched = await client.channels.fetch(channelId);
+        if (fetched?.type === ChannelType.GuildText) {
+            return fetched;
+        }
+    } catch (error) {
+        log.error(`Failed to fetch channel ${channelId}`, error);
+    }
+
+    return undefined;
+}
 
 export async function handleError(client: Client, error: unknown): Promise<void> {
-    console.error('Raw error:', error);
-
     const normalizedError = error instanceof Error ? error : new Error(String(error));
     const errorStack = normalizedError.stack || normalizedError.message || String(error);
+
+    log.error(normalizedError.message, normalizedError);
 
     if (!(config.ENABLE_LOGGING && config.ERROR_LOGGING_CHANNEL)) {
         return;
@@ -225,12 +273,9 @@ export async function handleError(client: Client, error: unknown): Promise<void>
     }
 
     try {
-        const channel = client.channels.cache.get(config.ERROR_LOGGING_CHANNEL!) as
-            | TextChannel
-            | undefined;
-
-        if (!channel || channel.type !== ChannelType.GuildText) {
-            console.error(`Invalid logging channel: ${config.ERROR_LOGGING_CHANNEL}`);
+        const channel = await getTextChannel(client, config.ERROR_LOGGING_CHANNEL!);
+        if (!channel) {
+            log.error(`Invalid logging channel ${config.ERROR_LOGGING_CHANNEL}`);
             return;
         }
 
@@ -252,6 +297,6 @@ export async function handleError(client: Client, error: unknown): Promise<void>
             flags: MessageFlags.IsComponentsV2,
         });
     } catch (sendError) {
-        console.error('Failed to send the error component message:', sendError);
+        log.error('Failed to send the error log', sendError);
     }
 }

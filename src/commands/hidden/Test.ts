@@ -6,7 +6,6 @@ import {
     PermissionFlagsBits,
 } from 'discord.js';
 import { type Client, Discord, Slash, SlashOption } from 'discordx';
-import { isDev } from '../../config/Config.js';
 import { testNotification } from '../../utils/Notify.js';
 
 @Discord()
@@ -26,14 +25,6 @@ export class Test {
         releaseName: string,
         interaction: CommandInteraction
     ) {
-        if (!isDev) {
-            await interaction.reply({
-                content: '❌ `/test` is only available in development.',
-                flags: MessageFlags.Ephemeral,
-            });
-            return;
-        }
-
         await interaction.reply({
             content: `🧪 Testing release: \`${releaseName}\``,
             flags: MessageFlags.Ephemeral,

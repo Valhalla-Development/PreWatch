@@ -1,8 +1,8 @@
-import '@colors/colors';
 import axios from 'axios';
 import type { Client } from 'discordx';
 import WebSocket from 'ws';
 import { config } from '../config/Config.js';
+import { log } from './Console.js';
 import { pollSearchString } from './Match.js';
 import { processReleaseNotification } from './Notify.js';
 import {
@@ -27,20 +27,14 @@ export async function checkApiHealth(): Promise<boolean> {
 
         if (isHealthy) {
             const totalReleases = response.data.data.total.toLocaleString('en');
-            console.log(
-                `${'>>'.green} [API STATUS] `.white +
-                    `API is healthy! Total releases: ${totalReleases}`.green
-            );
+            log.ok(`[API STATUS] API is healthy! Total releases: ${totalReleases}`);
         } else {
-            console.warn(
-                `${'>>'.yellow} [API STATUS] `.white +
-                    'API health check failed: Invalid response structure or no data'.yellow
-            );
+            log.warn('[API STATUS] API health check failed: Invalid response structure or no data');
         }
 
         return isHealthy;
     } catch (error) {
-        console.error(`${'>>'.red} [API STATUS] `.white + `API health check failed: ${error}`.red);
+        log.error('[API STATUS] API health check failed', error);
         return false;
     }
 }
@@ -62,9 +56,7 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
     let heartbeat: ReturnType<typeof setInterval> | undefined;
 
     ws.on('open', () => {
-        console.log(
-            `${'>>'.green} [WEBSOCKET] `.white + 'Connected to real-time release stream'.green
-        );
+        log.ok('[WEBSOCKET] Connected to real-time release stream');
 
         isAlive = true;
         releaseStreamUp = true;
@@ -72,10 +64,7 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
         wakePollLoop?.();
         heartbeat = setInterval(() => {
             if (!isAlive) {
-                console.warn(
-                    `${'>>'.yellow} [WEBSOCKET] `.white +
-                        'No pong received, terminating stale connection...'.yellow
-                );
+                log.warn('[WEBSOCKET] No pong received, terminating stale connection...');
                 ws.terminate();
                 return;
             }
@@ -94,21 +83,18 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
             const release = JSON.parse(data.toString());
 
             if (release.action === 'insert') {
-                console.log(
-                    `${'>>'.blue} [WEBSOCKET] `.white +
-                        `Received ${release.action}: ${release.row?.name || 'Unknown'}`.blue
+                log.info(
+                    `[WEBSOCKET] Received ${release.action}: ${release.row?.name || 'Unknown'}`
                 );
                 onMessage(release);
             }
         } catch (error) {
-            console.error(
-                `${'>>'.red} [WEBSOCKET] `.white + `Failed to parse message: ${error}`.red
-            );
+            log.error('[WEBSOCKET] Failed to parse message', error);
         }
     });
 
     ws.on('error', (error) => {
-        console.error(`${'>>'.red} [WEBSOCKET] `.white + `Connection error: ${error}`.red);
+        log.error('[WEBSOCKET] Connection error', error);
     });
 
     ws.on('close', (code, reason) => {
@@ -117,15 +103,13 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
             heartbeat = undefined;
         }
 
-        console.warn(
-            `${'>>'.yellow} [WEBSOCKET] `.white + `Connection closed: ${code} - ${reason}`.yellow
-        );
+        log.warn(`[WEBSOCKET] Connection closed: ${code} - ${reason}`);
 
         releaseStreamUp = false;
         wakePollLoop?.();
 
         setTimeout(() => {
-            console.log(`${'>>'.cyan} [WEBSOCKET] `.white + 'Attempting to reconnect...'.cyan);
+            log.info('[WEBSOCKET] Attempting to reconnect...');
             connectToReleaseStream(onMessage);
         }, 5000);
     });
@@ -149,7 +133,7 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
         }
         timer = setTimeout(() => {
             loop().catch((error) => {
-                console.error(`${'>>'.red} [POLL] `.white + `Loop error: ${error}`.red);
+                log.error('[POLL] Loop error', error);
             });
         }, ms);
     };
@@ -183,10 +167,8 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
                     allQueries.length > 0
                         ? ((allQueries.length * 60) / effectiveIntervalSec).toFixed(1)
                         : '0.0';
-                console.log(
-                    `${'>>'.cyan} [POLL] `.white +
-                        `Interval set to ${effectiveIntervalSec}s for ${allQueries.length} queries (~${rpm} req/min)`
-                            .cyan
+                log.info(
+                    `[POLL] Interval set to ${effectiveIntervalSec}s for ${allQueries.length} queries (~${rpm} req/min)`
                 );
                 lastEffectiveIntervalSec = effectiveIntervalSec;
             }
@@ -203,10 +185,7 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
             }
 
             const reason = releaseStreamUp ? 'catch-up after WebSocket connect' : 'WebSocket down';
-            console.log(
-                `${'>>'.cyan} [POLL] `.white +
-                    `Running ${allQueries.length} queries (${reason})`.cyan
-            );
+            log.info(`[POLL] Running ${allQueries.length} queries (${reason})`);
 
             const tickStartMs = Date.now();
             const perRequestDelayMs = Math.ceil(60_000 / POLL_SAFE_REQUESTS_PER_MINUTE);
@@ -222,15 +201,13 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
                 ? Math.max(baseIntervalSec * 1000, 0)
                 : Math.max(0, effectiveIntervalSec * 1000 - elapsedMs);
 
-            console.log(
-                `${'>>'.green} [POLL] `.white +
-                    `Completed ${allQueries.length} queries in ${(elapsedMs / 1000).toFixed(1)}s, next cycle in ${(nextDelayMs / 1000).toFixed(1)}s`
-                        .green
+            log.ok(
+                `[POLL] Completed ${allQueries.length} queries in ${(elapsedMs / 1000).toFixed(1)}s, next cycle in ${(nextDelayMs / 1000).toFixed(1)}s`
             );
 
             schedule(nextDelayMs);
         } catch (error) {
-            console.error(`${'>>'.red} [POLL] `.white + `Loop error: ${error}`.red);
+            log.error('[POLL] Loop error', error);
             schedule(config.POLLING_INTERVAL_SECONDS * 1000);
         } finally {
             running = false;
@@ -304,17 +281,12 @@ async function fetchReleasesNewerThan(
                 break;
             }
             if (offset >= (POLL_MAX_PAGES - 1) * POLL_PAGE_SIZE) {
-                console.warn(
-                    `${'>>'.yellow} [POLL] `.white +
-                        `Hit ${POLL_MAX_PAGES} page cap for "${search}"; older unseen releases may remain`
-                            .yellow
+                log.warn(
+                    `[POLL] Hit ${POLL_MAX_PAGES} page cap for "${search}"; older unseen releases may remain`
                 );
             }
         } catch (err) {
-            console.warn(
-                `${'>>'.yellow} [POLL] `.white +
-                    `Failed page offset ${offset} for "${search}": ${err}`.yellow
-            );
+            log.warn(`[POLL] Failed page offset ${offset} for "${search}"`, err);
             break;
         }
     }
@@ -350,7 +322,7 @@ async function pollQueryCatchUp(
             await processReleaseNotification(client, wsLike);
         }
     } catch (err) {
-        console.warn(`${'>>'.yellow} [POLL] `.white + `Failed query for "${query}": ${err}`.yellow);
+        log.warn(`[POLL] Failed query for "${query}"`, err);
     }
 
     await delay(perRequestDelayMs);

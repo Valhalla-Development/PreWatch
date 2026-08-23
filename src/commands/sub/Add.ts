@@ -11,6 +11,7 @@ import {
 } from 'discord.js';
 import { ButtonComponent, type Client, Discord, Slash, SlashOption } from 'discordx';
 import { config } from '../../config/Config.js';
+import { log } from '../../utils/Console.js';
 import { areWatchQueriesSimilar, isWatchQueryUsable, parseWatchQuery } from '../../utils/Match.js';
 import { keyv } from '../../utils/Store.js';
 import {
@@ -63,7 +64,7 @@ export class Add {
 
             return { success: true, userSubs };
         } catch (error) {
-            console.error('Error creating subscription:', error);
+            log.error('Failed to create subscription', error);
             return { message: '❌ Failed to add subscription. Try again later.', success: false };
         }
     }
@@ -253,7 +254,7 @@ export class Add {
                 flags: MessageFlags.IsComponentsV2,
             });
         } catch (error) {
-            console.error('Error adding subscription');
+            log.error('Failed to add subscription');
             await handleError(client, error);
             await interaction.editReply('❌ Failed to add subscription. Try again later.');
         }

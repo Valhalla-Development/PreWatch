@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { log } from '../utils/Console.js';
 
 // Helper transforms for common patterns
 const stringToBoolean = (val: string): boolean => val.toLowerCase() === 'true';
@@ -37,9 +38,6 @@ const configSchema = z.object({
             return Number.isNaN(num) ? 5 : num;
         }),
 
-    // Environment (defaults to development)
-    NODE_ENV: z.enum(['development', 'production']).default('development'),
-
     // Polling fallback settings
     POLLING_ENABLED: z.string().optional().default('false').transform(stringToBoolean),
     POLLING_INTERVAL_SECONDS: z
@@ -59,8 +57,8 @@ try {
 
     // Validate logging channels required when logging is enabled
     if (config.ENABLE_LOGGING && !config.ERROR_LOGGING_CHANNEL && !config.COMMAND_LOGGING_CHANNEL) {
-        console.warn(
-            '⚠️  ENABLE_LOGGING is true but ERROR_LOGGING_CHANNEL and COMMAND_LOGGING_CHANNEL are missing. Logging will be disabled.'
+        log.warn(
+            'ENABLE_LOGGING is true but ERROR_LOGGING_CHANNEL and COMMAND_LOGGING_CHANNEL are missing. Logging will be disabled.'
         );
         config.ENABLE_LOGGING = false;
     }
@@ -76,8 +74,6 @@ try {
 }
 
 export { config };
-
-export const isDev = config.NODE_ENV === 'development';
 
 // Derived polling cap to ensure API safety (30 req/min)
 export const POLLING_MAX_PER_TICK = (() => {

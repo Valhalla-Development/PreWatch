@@ -1,5 +1,5 @@
 import type { Client } from 'discordx';
-import '@colors/colors';
+import { log } from './Console.js';
 import { parseWatchQuery } from './Match.js';
 import { keyv } from './Store.js';
 import type { ActiveSubscription, LastSeen, ParsedWatchQuery, Release } from './Types.js';
@@ -262,9 +262,8 @@ export async function rebuildSubscriptionIndex(client: Client): Promise<void> {
     indexHydrated = true;
 
     const subscriptions = readSubscriptionsFromIndex(client);
-    console.log(
-        `${'>>'.green} [INDEX] `.white +
-            `Loaded ${subscriptions.length} watches across ${subscriptionIndex.size} guilds`.green
+    log.ok(
+        `[INDEX] Loaded ${subscriptions.length} watches across ${subscriptionIndex.size} guilds`
     );
 }
 
@@ -404,7 +403,7 @@ export async function unsubscribeFromQuery(
 
         return result;
     } catch (error) {
-        console.error('Error unsubscribing from query:', error);
+        log.error('Failed to unsubscribe from query', error);
         return { message: '❌ Failed to unsubscribe. Try again later.', success: false };
     }
 }
@@ -455,7 +454,7 @@ export async function deleteSubscription(
             success: true,
         };
     } catch (error) {
-        console.error('Error deleting subscription:', error);
+        log.error('Failed to delete subscription', error);
         return { message: '❌ Failed to delete subscription. Try again later.', success: false };
     }
 }

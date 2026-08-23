@@ -1,9 +1,9 @@
 import { dirname, importx } from '@discordx/importer';
 import { IntentsBitField } from 'discord.js';
-import { Client } from 'discordx';
-import 'dotenv/config';
 import { ClusterClient, getInfo } from 'discord-hybrid-sharding';
-import { config, isDev } from './config/Config.js';
+import { Client } from 'discordx';
+import { config } from './config/Config.js';
+import { log } from './utils/Console.js';
 import { handleError } from './utils/Util.js';
 
 /**
@@ -11,7 +11,7 @@ import { handleError } from './utils/Util.js';
  * This allows each shard to communicate with the cluster manager
  */
 interface ValkyrieClient extends Client {
-    cluster: ClusterClient<Client>;
+    cluster?: ClusterClient<Client>;
 }
 
 /**
@@ -27,6 +27,13 @@ interface ValkyrieClient extends Client {
  * - shardCount: Uses getInfo().TOTAL_SHARDS to know the total number of shards
  * - Each instance of the bot (cluster) will handle a subset of the total shards
  */
+let clusterInfo: ReturnType<typeof getInfo> | undefined;
+try {
+    clusterInfo = getInfo();
+} catch {
+    clusterInfo = undefined;
+}
+
 const clientConfig = {
     botGuilds: config.GUILDS,
     intents: [
@@ -36,12 +43,12 @@ const clientConfig = {
         IntentsBitField.Flags.GuildMembers,
     ],
     silent: true,
-    ...(isDev
-        ? {}
-        : {
-              shardCount: getInfo().TOTAL_SHARDS,
-              shards: getInfo().SHARD_LIST,
-          }),
+    ...(clusterInfo
+        ? {
+              shardCount: clusterInfo.TOTAL_SHARDS,
+              shards: clusterInfo.SHARD_LIST,
+          }
+        : {}),
 };
 
 export const client = new Client(clientConfig) as ValkyrieClient;
@@ -70,7 +77,6 @@ process.on('uncaughtException', async (error) => {
  * @returns Promise that resolves when error is handled
  */
 client.on('error', async (error: unknown) => {
-    console.error('Client error:', error);
     await handleError(client, error);
 });
 
@@ -101,17 +107,17 @@ async function run() {
             await importx(
                 `${dirname(import.meta.url)}/{events,commands/miscellaneous,commands/sub}/**/*.{ts,js}`
             );
-            if (isDev) {
+            if (!clusterInfo) {
                 await importx(`${dirname(import.meta.url)}/commands/hidden/**/*.{ts,js}`);
             }
             await sleep(time);
-            if (!isDev) {
+            if (clusterInfo) {
                 client.cluster = new ClusterClient(client);
                 await sleep(time);
             }
             await client.login(config.BOT_TOKEN);
         } catch (error) {
-            console.error('An error occurred while initializing the bot:', error);
+            log.error('Failed to start the bot', error);
         }
     };
     await loadSequentially();

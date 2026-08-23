@@ -7,6 +7,7 @@ import {
     type EmbedBuilder,
     type Interaction,
 } from 'discord.js';
+import { log } from './Console.js';
 
 /**
  * Creates a pagination system for a list of embeds with next, back, and home buttons.
@@ -130,5 +131,5 @@ export async function pagination(
         interaction.editReply({ components: [row], embeds: [embeds[currentPage]!] });
     });
 
-    collector.on('error', (e: Error) => console.log(e));
+    collector.on('error', (e: Error) => log.error('Pagination collector failed', e));
 }

@@ -1,4 +1,3 @@
-import '@colors/colors';
 import {
     ButtonBuilder,
     ButtonStyle,
@@ -10,6 +9,7 @@ import {
     TextDisplayBuilder,
 } from 'discord.js';
 import type { Client } from 'discordx';
+import { log } from './Console.js';
 import { releaseMatchesParsed } from './Match.js';
 import {
     getAllActiveSubscriptions,
@@ -64,10 +64,7 @@ export async function processReleaseNotification(
                           ));
 
                     if (!shouldNotify) {
-                        console.log(
-                            `${'>>'.blue} [DEDUPE] `.white +
-                                `Skipping duplicate for query "${query}": ${row.name}`.blue
-                        );
+                        log.info(`[DEDUPE] Skipping duplicate for query "${query}": ${row.name}`);
                         return;
                     }
 
@@ -80,10 +77,8 @@ export async function processReleaseNotification(
                     );
 
                     if (!sent) {
-                        console.warn(
-                            `${'>>'.yellow} [NOTIFICATION] `.white +
-                                `Send failed for query "${query}"; lastSeen left unchanged so this release can retry`
-                                    .yellow
+                        log.warn(
+                            `[NOTIFICATION] Send failed for query "${query}"; lastSeen left unchanged so this release can retry`
                         );
                         return;
                     }
@@ -97,13 +92,10 @@ export async function processReleaseNotification(
         );
 
         if (matchedQueries.size > 0) {
-            console.log(
-                `${'>>'.green} [NOTIFICATION] `.white +
-                    `Found ${matchedQueries.size} matching queries for: ${row.name}`.green
-            );
+            log.ok(`[NOTIFICATION] Found ${matchedQueries.size} matching queries for: ${row.name}`);
         }
     } catch (error) {
-        console.error(`${'>>'.red} [NOTIFICATION] `.white + 'Error processing release'.red);
+        log.error('[NOTIFICATION] Error processing release', error);
         await handleError(client, error);
     }
 }
@@ -144,9 +136,8 @@ export async function sendBatchedNotification(
             (await client.channels.fetch(channelId).catch(() => null));
         const canSendToChannel = channel?.isTextBased() && channel && 'send' in channel;
         if (!canSendToChannel) {
-            console.error(
-                `${'>>'.red} [NOTIFICATION] `.white +
-                    `Cannot send to channel ${channelId}: missing or not text-based`.red
+            log.error(
+                `[NOTIFICATION] Cannot send to channel ${channelId}: missing or not text-based`
             );
             return false;
         }
@@ -179,22 +170,18 @@ export async function sendBatchedNotification(
                     components: [containerWithPings],
                     flags: MessageFlags.IsComponentsV2,
                 });
-                console.log(
-                    `${'>>'.green} [NOTIFICATION] `.white +
-                        `Sent to channel ${channel.id} (${userIdsToPing.length} users)`.green
+                log.ok(
+                    `[NOTIFICATION] Sent to channel ${channel.id} (${userIdsToPing.length} users)`
                 );
-                console.log(
-                    `${'>>'.green} [NOTIFICATION] `.white +
-                        `Notified ${userIdsToPing.length} users about: ${release.name} (query: ${matchedQuery})`
-                            .green
+                log.ok(
+                    `[NOTIFICATION] Notified ${userIdsToPing.length} users about: ${release.name} (query: ${matchedQuery})`
                 );
                 return true;
             } catch (error) {
                 const willRetry = !isNonRetryableSendError(error) && attempt < NOTIFY_SEND_ATTEMPTS;
-                console.error(
-                    `${'>>'.red} [NOTIFICATION] `.white +
-                        `Failed to send to channel ${channel.id} (attempt ${attempt}/${NOTIFY_SEND_ATTEMPTS})`
-                            .red
+                log.error(
+                    `[NOTIFICATION] Failed to send to channel ${channel.id} (attempt ${attempt}/${NOTIFY_SEND_ATTEMPTS})`,
+                    error
                 );
                 if (!willRetry) {
                     await handleError(client, error);
@@ -207,9 +194,7 @@ export async function sendBatchedNotification(
 
         return sendAttempt(1);
     } catch (error) {
-        console.error(
-            `${'>>'.red} [NOTIFICATION] `.white + `Error sending batch notification: ${error}`.red
-        );
+        log.error('[NOTIFICATION] Error sending batch notification', error);
         await handleError(client, error);
         return false;
     }
@@ -233,6 +218,6 @@ export async function testNotification(client: Client, releaseName: string): Pro
         },
     };
 
-    console.log(`🧪 [TEST] Simulating release: ${releaseName}`.cyan);
+    log.info(`[TEST] Simulating release: ${releaseName}`);
     await processReleaseNotification(client, mockRelease);
 }
