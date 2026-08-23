@@ -1,4 +1,4 @@
-import { Events, OAuth2Scopes, version } from 'discord.js';
+import { Events, OAuth2Scopes, PermissionsBitField, version } from 'discord.js';
 import { type Client, Discord, Once } from 'discordx';
 import si from 'systeminformation';
 import { version as botVersion } from '../../package.json' with { type: 'json' };
@@ -32,7 +32,15 @@ export class Ready {
         const totalMemory = Math.floor(memory.total / 1024 / 1024);
         const realMemUsed = Math.floor((memory.used - memory.buffcache) / 1024 / 1024);
         const inviteUrl = client.generateInvite({
-            permissions: BigInt('517543939136'),
+            permissions: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.EmbedLinks,
+                PermissionsBitField.Flags.AttachFiles,
+                PermissionsBitField.Flags.CreatePublicThreads,
+                PermissionsBitField.Flags.CreatePrivateThreads,
+                PermissionsBitField.Flags.SendMessagesInThreads,
+            ],
             scopes: [OAuth2Scopes.Bot, OAuth2Scopes.ApplicationsCommands],
         });
 
