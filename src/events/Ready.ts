@@ -3,8 +3,7 @@ import { type Client, Discord, Once } from 'discordx';
 import si from 'systeminformation';
 import { version as botVersion } from '../../package.json' with { type: 'json' };
 import { log } from '../utils/Console.js';
-import { checkApiHealth, connectToReleaseStream, startPollingFallback } from '../utils/Monitor.js';
-import { processReleaseNotification } from '../utils/Notify.js';
+import { startReleaseMonitoring } from '../utils/Monitor.js';
 import { rebuildSubscriptionIndex } from '../utils/Subscriptions.js';
 import { updateStatus } from '../utils/Util.js';
 
@@ -80,17 +79,6 @@ export class Ready {
 
         await rebuildSubscriptionIndex(client);
 
-        // Check API health
-        const isApiHealthy = await checkApiHealth();
-
-        // Connect to release stream if API is healthy
-        if (isApiHealthy) {
-            connectToReleaseStream((data) => {
-                // Process release for notifications
-                processReleaseNotification(client, data);
-            });
-        }
-
-        await startPollingFallback(client);
+        await startReleaseMonitoring(client);
     }
 }

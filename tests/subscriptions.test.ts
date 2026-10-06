@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, jest, mock, test } from 'bun:test';
+import { EventEmitter } from 'node:events';
 
 const records = new Map<string, unknown>();
 let failKey: string | undefined;
@@ -114,6 +115,23 @@ describe('subscription mutations', () => {
     });
 });
 
+class TestSocket extends EventEmitter {
+    static instances: TestSocket[] = [];
+    readonly options: { handshakeTimeout: number };
+    constructor(_url: string, options: { handshakeTimeout: number }) {
+        super();
+        this.options = options;
+        TestSocket.instances.push(this);
+    }
+    ping() {
+        this.emit('pong');
+    }
+    terminate() {
+        this.emit('close', 1000, 'closed');
+    }
+}
+mock.module('ws', () => ({ default: TestSocket }));
+
 const monitor = await import('../src/utils/Monitor.js');
 const notify = await import('../src/utils/Notify.js');
 function release(id: number, preAt: number) {
@@ -201,5 +219,36 @@ describe('delivery receipts and recovery cursors', () => {
         send.mockResolvedValue({});
         await monitor.pollQueryCatchUp(notificationClient, 'Alpha', 0);
         expect(await subscriptions.isReleaseDelivered('guild', 'Alpha', row)).toBe(true);
+    });
+});
+
+describe('monitor startup and reconnection', () => {
+    test('starts the stream even when the health endpoint is unavailable', async () => {
+        const controller = new AbortController();
+        const count = TestSocket.instances.length;
+        get.mockRejectedValue(new Error('API unavailable'));
+        await monitor.startReleaseMonitoring(notificationClient, controller.signal);
+        expect(TestSocket.instances).toHaveLength(count + 1);
+        expect(TestSocket.instances.at(-1)?.options.handshakeTimeout).toBe(15_000);
+        expect(get.mock.calls[0]?.[1]).toEqual({ timeout: 15_000 });
+        controller.abort();
+    });
+
+    test('retries a failed connection and stops reconnecting after cancellation', () => {
+        jest.useFakeTimers();
+        const controller = new AbortController();
+        try {
+            const count = TestSocket.instances.length;
+            const socket = monitor.connectToReleaseStream(() => undefined, controller.signal);
+            socket.emit('close', 1006, 'Unavailable');
+            jest.advanceTimersByTime(5000);
+            expect(TestSocket.instances).toHaveLength(count + 2);
+            controller.abort();
+            jest.advanceTimersByTime(5000);
+            expect(TestSocket.instances).toHaveLength(count + 2);
+        } finally {
+            controller.abort();
+            jest.useRealTimers();
+        }
     });
 });

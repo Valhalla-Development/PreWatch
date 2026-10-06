@@ -17,7 +17,7 @@ import { delay } from './Util.js';
 
 export async function checkApiHealth(): Promise<boolean> {
     try {
-        const response = await axios.get(`${config.API_URL}/stats`);
+        const response = await axios.get(`${config.API_URL}/stats`, { timeout: 15_000 });
 
         const isHealthy =
             response.data.status === 'success' &&
@@ -47,15 +47,25 @@ const POLL_PAGE_SIZE = 20;
 const POLL_LOOKBACK_SECONDS = 300;
 const POLL_SAFE_REQUESTS_PER_MINUTE = 30;
 
-export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => void): WebSocket {
+export function connectToReleaseStream(
+    onMessage: (data: WebSocketMessage) => void,
+    signal?: AbortSignal
+): WebSocket {
     const wsUrl = `${config.API_URL}/ws`;
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(wsUrl, { handshakeTimeout: 15_000 });
 
     const HEARTBEAT_INTERVAL_MS = 30_000;
     let isAlive = true;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
 
+    const stop = () => ws.terminate();
+    signal?.addEventListener('abort', stop, { once: true });
+
     ws.on('open', () => {
+        if (signal?.aborted) {
+            stop();
+            return;
+        }
         log.ok('[WEBSOCKET] Connected to real-time release stream');
 
         isAlive = true;
@@ -108,17 +118,36 @@ export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => vo
         releaseStreamUp = false;
         wakePollLoop?.();
 
+        signal?.removeEventListener('abort', stop);
+        if (signal?.aborted) {
+            return;
+        }
         setTimeout(() => {
+            if (signal?.aborted) {
+                return;
+            }
             log.info('[WEBSOCKET] Attempting to reconnect...');
-            connectToReleaseStream(onMessage);
+            connectToReleaseStream(onMessage, signal);
         }, 5000);
     });
 
     return ws;
 }
 
+export async function startReleaseMonitoring(client: Client, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+        return;
+    }
+    // Health reporting is diagnostic; a temporary API outage must not disable reconnection.
+    connectToReleaseStream((data) => {
+        processReleaseNotification(client, data);
+    }, signal);
+    await checkApiHealth();
+    await startPollingFallback(client, signal);
+}
+
 export async function startPollingFallback(client: Client, signal?: AbortSignal): Promise<void> {
-    if (!config.POLLING_ENABLED) {
+    if (!config.POLLING_ENABLED || signal?.aborted) {
         return;
     }
 
@@ -128,6 +157,9 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
     let retrigger = false;
 
     const schedule = (ms: number) => {
+        if (signal?.aborted) {
+            return;
+        }
         if (timer) {
             clearTimeout(timer);
         }
@@ -147,7 +179,7 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
     };
 
     const loop = async () => {
-        if (running) {
+        if (running || signal?.aborted) {
             return;
         }
         running = true;
@@ -191,6 +223,9 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
             const perRequestDelayMs = Math.ceil(60_000 / POLL_SAFE_REQUESTS_PER_MINUTE);
 
             for (const query of allQueries) {
+                if (signal?.aborted) {
+                    return;
+                }
                 // biome-ignore lint/performance/noAwaitInLoops: requests are intentionally sequential and paced to respect the API rate limit
                 await pollQueryCatchUp(client, query, perRequestDelayMs);
             }
@@ -218,16 +253,19 @@ export async function startPollingFallback(client: Client, signal?: AbortSignal)
         }
     };
 
-    await loop();
-
     if (signal) {
-        signal.addEventListener('abort', () => {
-            if (timer) {
-                clearTimeout(timer);
-            }
-            wakePollLoop = undefined;
-        });
+        signal.addEventListener(
+            'abort',
+            () => {
+                if (timer) {
+                    clearTimeout(timer);
+                }
+                wakePollLoop = undefined;
+            },
+            { once: true }
+        );
     }
+    await loop();
 }
 
 async function oldestWatermarkForQuery(
