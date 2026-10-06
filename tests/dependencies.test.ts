@@ -9,6 +9,7 @@ import { spawn } from 'bun';
 import HttpProxyAgent from 'http-proxy-agent';
 import Keyv from 'keyv';
 import { create, extract } from 'tar';
+import { pruneDeliveryReceipts } from '../src/utils/Retention.js';
 
 const require = createRequire(import.meta.url);
 interface BraceNode {
@@ -59,6 +60,17 @@ describe('dependency security compatibility', () => {
                 throwOnErrors: true,
             });
             await keyv.set('subscription', { users: ['one', 'two'] });
+            await storage.set(
+                'data:delivered:guild:alpha:old',
+                JSON.stringify({ expires: Date.now() - 1000, value: true })
+            );
+            await storage.set(
+                'data:delivered:guild:alpha:new',
+                JSON.stringify({ expires: Date.now() + 60_000, value: true })
+            );
+            await pruneDeliveryReceipts(storage);
+            expect(await storage.get('data:delivered:guild:alpha:old')).toBeUndefined();
+            expect(await storage.get('data:delivered:guild:alpha:new')).toBeDefined();
             await storage.disconnect();
             storage = new KeyvSqlite({ busyTimeout: 5000, uri });
             keyv = new Keyv<{ users: string[] }>({

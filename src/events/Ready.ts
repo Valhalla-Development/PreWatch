@@ -4,6 +4,8 @@ import si from 'systeminformation';
 import { version as botVersion } from '../../package.json' with { type: 'json' };
 import { log } from '../utils/Console.js';
 import { startReleaseMonitoring } from '../utils/Monitor.js';
+import { pruneDeliveryReceipts } from '../utils/Retention.js';
+import { subscriptionStore } from '../utils/Store.js';
 import { rebuildSubscriptionIndex } from '../utils/Subscriptions.js';
 import { updateStatus } from '../utils/Util.js';
 
@@ -78,6 +80,13 @@ export class Ready {
         updateStatus(client);
 
         await rebuildSubscriptionIndex(client);
+
+        const pruneReceipts = () =>
+            pruneDeliveryReceipts(subscriptionStore).catch((error) => {
+                log.error('[RETENTION] Failed to prune delivery receipts', error);
+            });
+        await pruneReceipts();
+        setInterval(pruneReceipts, 60 * 60 * 1000).unref();
 
         await startReleaseMonitoring(client);
     }
