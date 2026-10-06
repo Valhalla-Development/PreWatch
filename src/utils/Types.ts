@@ -28,7 +28,9 @@ export interface WebSocketMessage {
 
 export interface LastSeen {
     id?: number;
+    pollPreAt?: number;
     preAt?: number;
+    startedAt?: number;
 }
 
 export interface ParsedWatchQuery {

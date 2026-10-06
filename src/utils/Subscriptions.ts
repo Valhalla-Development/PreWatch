@@ -32,12 +32,20 @@ export async function setLastSeenForGuildQuery(
     release: Release
 ): Promise<void> {
     const key = getLastSeenKey(guildId, query);
-    const payload: LastSeen = { id: release.id, preAt: release.preAt };
+    const existing = await getLastSeenForGuildQuery(guildId, query);
+    const payload: LastSeen = {
+        ...existing,
+        id: release.id,
+        pollPreAt: existing.pollPreAt ?? existing.preAt ?? release.preAt,
+        preAt: Math.max(existing.preAt ?? 0, release.preAt),
+    };
+    // Individual receipts keep out-of-order and same-second releases independent.
+    await keyv.set(getDeliveryKey(guildId, query, release.id), true, 7 * 24 * 60 * 60 * 1000);
     await keyv.set(key, payload);
     lastSeenCache.set(key, payload);
 }
 
-export async function seedLastSeenIfAbsent(
+async function seedLastSeenIfAbsentUnlocked(
     guildId: string,
     query: string,
     preAt: number
@@ -47,9 +55,15 @@ export async function seedLastSeenIfAbsent(
         return;
     }
     const key = getLastSeenKey(guildId, query);
-    const payload: LastSeen = { preAt };
+    const payload: LastSeen = { pollPreAt: preAt, preAt, startedAt: preAt };
     await keyv.set(key, payload);
     lastSeenCache.set(key, payload);
+}
+
+export function seedLastSeenIfAbsent(guildId: string, query: string, preAt: number): Promise<void> {
+    return withLastSeenLock(guildId, query, () =>
+        seedLastSeenIfAbsentUnlocked(guildId, query, preAt)
+    );
 }
 
 const lastSeenLocks = new Map<string, Promise<void>>();
@@ -62,21 +76,56 @@ export function withLastSeenLock<T>(
     const key = getLastSeenKey(guildId, query);
     const previous = lastSeenLocks.get(key) ?? Promise.resolve();
     const run = previous.then(fn);
-    lastSeenLocks.set(
-        key,
-        run.then(
-            () => undefined,
-            () => undefined
-        )
+    const settled = run.then(
+        () => undefined,
+        () => undefined
     );
+    lastSeenLocks.set(key, settled);
+    settled.then(() => {
+        if (lastSeenLocks.get(key) === settled) {
+            lastSeenLocks.delete(key);
+        }
+    });
     return run;
 }
 
 export function isAlreadySeen(lastSeen: LastSeen, release: Release): boolean {
-    if (typeof lastSeen.id === 'number' && lastSeen.id === release.id) {
-        return true;
-    }
-    return typeof lastSeen.preAt === 'number' && release.preAt <= lastSeen.preAt;
+    return (
+        lastSeen.id === release.id ||
+        (typeof lastSeen.startedAt === 'number' && release.preAt < lastSeen.startedAt)
+    );
+}
+
+function getDeliveryKey(guildId: string, query: string, releaseId: number): string {
+    return `delivered:${guildId}:${normalizeQueryStorageKey(query)}:${releaseId}`;
+}
+
+export async function isReleaseDelivered(
+    guildId: string,
+    query: string,
+    release: Release
+): Promise<boolean> {
+    const lastSeen = await getLastSeenForGuildQuery(guildId, query);
+    return (
+        isAlreadySeen(lastSeen, release) ||
+        Boolean(await keyv.get(getDeliveryKey(guildId, query, release.id)))
+    );
+}
+
+export async function advancePollCursor(
+    guildId: string,
+    query: string,
+    preAt: number
+): Promise<void> {
+    await withLastSeenLock(guildId, query, async () => {
+        const existing = await getLastSeenForGuildQuery(guildId, query);
+        const payload: LastSeen = {
+            ...existing,
+            pollPreAt: Math.max(existing.pollPreAt ?? 0, preAt),
+        };
+        await keyv.set(getLastSeenKey(guildId, query), payload);
+        lastSeenCache.set(getLastSeenKey(guildId, query), payload);
+    });
 }
 
 const ALERTS_CHANNEL_KEY_PREFIX = 'alertsChannel:';

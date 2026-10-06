@@ -6,10 +6,10 @@ import { log } from './Console.js';
 import { pollSearchString } from './Match.js';
 import { processReleaseNotification } from './Notify.js';
 import {
+    advancePollCursor,
     getIndexedQueryWatchers,
     getLastSeenForGuildQuery,
     getPollQueries,
-    isAlreadySeen,
     seedLastSeenIfAbsent,
 } from './Subscriptions.js';
 import type { LastSeen, Release, WebSocketMessage } from './Types.js';
@@ -44,7 +44,7 @@ let pollCatchUpRequested = false;
 let wakePollLoop: (() => void) | undefined;
 
 const POLL_PAGE_SIZE = 20;
-const POLL_MAX_PAGES = 5;
+const POLL_LOOKBACK_SECONDS = 300;
 const POLL_SAFE_REQUESTS_PER_MINUTE = 30;
 
 export function connectToReleaseStream(onMessage: (data: WebSocketMessage) => void): WebSocket {
@@ -241,60 +241,57 @@ async function oldestWatermarkForQuery(
     if (withMark.length === 0) {
         return;
     }
-    return withMark.reduce((oldest, seen) =>
-        (seen.preAt ?? 0) < (oldest.preAt ?? 0) ? seen : oldest
-    );
+    // Live sends never advance this cursor. Overlap catches delayed API indexing.
+    return {
+        preAt: Math.min(
+            ...withMark.map((seen) =>
+                Math.max(
+                    seen.startedAt ?? 0,
+                    (seen.pollPreAt ?? seen.preAt ?? 0) - POLL_LOOKBACK_SECONDS
+                )
+            )
+        ),
+    };
 }
 
-async function fetchReleasesNewerThan(
+export async function fetchReleasesNewerThan(
     search: string,
     watermark: LastSeen,
     perRequestDelayMs: number
 ): Promise<Release[]> {
-    const collected: Release[] = [];
-    const offsets = Array.from({ length: POLL_MAX_PAGES }, (_, page) => page * POLL_PAGE_SIZE);
+    const collected = new Map<number, Release>();
+    let offset = 0;
 
-    for (const offset of offsets) {
+    // Read through the recovery boundary before allowing any cursor to advance.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: pagination ends only when the API reaches the recovery boundary
+    while (true) {
         if (offset > 0) {
-            // biome-ignore lint/performance/noAwaitInLoops: pages are paced to stay under the API rate limit
+            // biome-ignore lint/performance/noAwaitInLoops: page requests must be sequential and paced
             await delay(perRequestDelayMs);
         }
-
         const url = `${config.API_URL}/?q=${encodeURIComponent(search)}&count=${POLL_PAGE_SIZE}&offset=${offset}`;
-        try {
-            const resp = await axios.get(url);
-            const rows = resp?.data?.data?.rows as Release[] | undefined;
-            if (!rows || rows.length === 0) {
+        const response = await axios.get(url, { timeout: 15_000 });
+        const rows = response?.data?.data?.rows as Release[] | undefined;
+        if (!Array.isArray(rows)) {
+            throw new Error('Invalid release search response');
+        }
+        let hitWatermark = false;
+        for (const row of rows) {
+            if (typeof watermark.preAt === 'number' && row.preAt < watermark.preAt) {
+                hitWatermark = true;
                 break;
             }
-
-            let hitWatermark = false;
-            for (const row of rows) {
-                if (isAlreadySeen(watermark, row)) {
-                    hitWatermark = true;
-                    break;
-                }
-                collected.push(row);
-            }
-
-            if (hitWatermark || rows.length < POLL_PAGE_SIZE) {
-                break;
-            }
-            if (offset >= (POLL_MAX_PAGES - 1) * POLL_PAGE_SIZE) {
-                log.warn(
-                    `[POLL] Hit ${POLL_MAX_PAGES} page cap for "${search}"; older unseen releases may remain`
-                );
-            }
-        } catch (err) {
-            log.warn(`[POLL] Failed page offset ${offset} for "${search}"`, err);
+            collected.set(row.id, row);
+        }
+        if (hitWatermark || rows.length < POLL_PAGE_SIZE) {
             break;
         }
+        offset += POLL_PAGE_SIZE;
     }
-
-    return collected.sort((a, b) => a.preAt - b.preAt);
+    return Array.from(collected.values()).sort((a, b) => a.preAt - b.preAt || a.id - b.id);
 }
 
-async function pollQueryCatchUp(
+export async function pollQueryCatchUp(
     client: Client,
     query: string,
     perRequestDelayMs: number
@@ -319,7 +316,14 @@ async function pollQueryCatchUp(
         for (const row of rows) {
             const wsLike: WebSocketMessage = { action: 'insert', row };
             // biome-ignore lint/performance/noAwaitInLoops: releases must be processed in preAt order so dedupe state stays consistent
-            await processReleaseNotification(client, wsLike);
+            const succeeded = await processReleaseNotification(client, wsLike, query);
+            if (!succeeded) {
+                throw new Error('Release delivery failed; recovery cursor left unchanged');
+            }
+        }
+        for (const guildId of watchers) {
+            // biome-ignore lint/performance/noAwaitInLoops: only complete delivery batches may advance recovery cursors
+            await advancePollCursor(guildId, query, now);
         }
     } catch (err) {
         log.warn(`[POLL] Failed query for "${query}"`, err);

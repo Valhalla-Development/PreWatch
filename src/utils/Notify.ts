@@ -13,8 +13,8 @@ import { log } from './Console.js';
 import { releaseMatchesParsed } from './Match.js';
 import {
     getAllActiveSubscriptions,
-    getLastSeenForGuildQuery,
-    isAlreadySeen,
+    isReleaseDelivered,
+    normalizeQueryStorageKey,
     setLastSeenForGuildQuery,
     withLastSeenLock,
 } from './Subscriptions.js';
@@ -35,10 +35,11 @@ function isNonRetryableSendError(error: unknown): boolean {
 
 export async function processReleaseNotification(
     client: Client,
-    release: WebSocketMessage
-): Promise<void> {
+    release: WebSocketMessage,
+    watchQuery?: string
+): Promise<boolean> {
     if (release.action !== 'insert' || !release.row) {
-        return;
+        return true;
     }
 
     const { row } = release;
@@ -46,12 +47,19 @@ export async function processReleaseNotification(
     try {
         const subscriptions = await getAllActiveSubscriptions(client);
         const matchedQueries = new Set<string>();
+        let succeeded = true;
         const isTestRelease = row.id === 999_999;
 
         await Promise.all(
             subscriptions.map(async (subscription) => {
                 const { guildId, channelId, parsed, query, users } = subscription;
 
+                if (
+                    watchQuery &&
+                    normalizeQueryStorageKey(watchQuery) !== normalizeQueryStorageKey(query)
+                ) {
+                    return;
+                }
                 if (!releaseMatchesParsed(parsed, row)) {
                     return;
                 }
@@ -59,9 +67,7 @@ export async function processReleaseNotification(
                 await withLastSeenLock(guildId, query, async () => {
                     const shouldNotify = isTestRelease
                         ? true
-                        : !(await getLastSeenForGuildQuery(guildId, query).then((lastSeen) =>
-                              isAlreadySeen(lastSeen, row)
-                          ));
+                        : !(await isReleaseDelivered(guildId, query, row));
 
                     if (!shouldNotify) {
                         log.info(`[DEDUPE] Skipping duplicate for query "${query}": ${row.name}`);
@@ -77,6 +83,7 @@ export async function processReleaseNotification(
                     );
 
                     if (!sent) {
+                        succeeded = false;
                         log.warn(
                             `[NOTIFICATION] Send failed for query "${query}"; lastSeen left unchanged so this release can retry`
                         );
@@ -94,9 +101,11 @@ export async function processReleaseNotification(
         if (matchedQueries.size > 0) {
             log.ok(`[NOTIFICATION] Found ${matchedQueries.size} matching queries for: ${row.name}`);
         }
+        return succeeded;
     } catch (error) {
         log.error('[NOTIFICATION] Error processing release', error);
         await handleError(client, error);
+        return false;
     }
 }
 
