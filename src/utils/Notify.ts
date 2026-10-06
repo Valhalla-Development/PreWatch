@@ -13,6 +13,7 @@ import { log } from './Console.js';
 import { releaseMatchesParsed } from './Match.js';
 import {
     getAllActiveSubscriptions,
+    getQueryToken,
     isReleaseDelivered,
     normalizeQueryStorageKey,
     setLastSeenForGuildQuery,
@@ -166,9 +167,8 @@ export async function sendBatchedNotification(
         );
         containerWithPings.addTextDisplayComponents(detailsText);
         const guildId = (channel as TextChannel).guild.id;
-        const encodedQuery = encodeURIComponent(matchedQuery);
         const unsubButtonChannel = new ButtonBuilder()
-            .setCustomId(`unsub:${guildId}:${encodedQuery}`)
+            .setCustomId(`unsub:${guildId}:q:${getQueryToken(matchedQuery)}`)
             .setLabel('Unsubscribe')
             .setStyle(ButtonStyle.Danger);
         containerWithPings.addActionRowComponents((row) => row.addComponents(unsubButtonChannel));
@@ -176,6 +176,7 @@ export async function sendBatchedNotification(
         const sendAttempt = async (attempt: number): Promise<boolean> => {
             try {
                 await (channel as TextChannel).send({
+                    allowedMentions: { parse: [], users: userIdsToPing },
                     components: [containerWithPings],
                     flags: MessageFlags.IsComponentsV2,
                 });

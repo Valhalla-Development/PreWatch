@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Client } from 'discordx';
 import { log } from './Console.js';
 import { parseWatchQuery } from './Match.js';
@@ -636,4 +637,24 @@ export async function deleteSubscription(
         log.error('Failed to delete subscription', error);
         return { message: '❌ Failed to delete subscription. Try again later.', success: false };
     }
+}
+
+export function getQueryToken(query: string): string {
+    return createHash('sha256').update(normalizeQueryStorageKey(query)).digest('hex').slice(0, 24);
+}
+
+export async function unsubscribeFromQueryToken(
+    userId: string,
+    guildId: string,
+    token: string
+): Promise<{
+    success: boolean;
+    message?: string;
+}> {
+    const subs: StoredSubscription[] = (await keyv.get(`user:${guildId}:${userId}`)) || [];
+    const sub = subs.find((entry) => getQueryToken(entry.query) === token);
+    if (!sub) {
+        return { message: '❌ You are not subscribed to this query.', success: false };
+    }
+    return unsubscribeFromQuery(userId, guildId, sub.query);
 }

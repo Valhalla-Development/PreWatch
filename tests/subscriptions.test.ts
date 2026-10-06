@@ -252,3 +252,79 @@ describe('monitor startup and reconnection', () => {
         }
     });
 });
+
+const { Add } = await import('../src/commands/sub/Add.js');
+const addCommand = new Add();
+
+describe('compact subscription buttons', () => {
+    test('serializes a 50-character confirmation and confirms its stored query', async () => {
+        await create('one');
+        const query = `alpha ${'a'.repeat(44)}`;
+        const editReply = mock();
+        const interaction = {
+            deferReply: mock(),
+            editReply,
+            guildId: 'guild',
+            user: { id: 'one' },
+        };
+        await addCommand.add(
+            query,
+            interaction as unknown as Parameters<Add['add']>[1],
+            notificationClient
+        );
+        const payload = editReply.mock.calls[0]?.[0];
+        const container = payload.components[0].toJSON();
+        const customId = container.components.at(-1).components[0].custom_id;
+        expect(query).toHaveLength(50);
+        expect(customId.length).toBeLessThanOrEqual(100);
+        const button = {
+            customId,
+            deferUpdate: mock(),
+            editReply: mock(),
+            followUp: mock(),
+            guildId: 'guild',
+            user: { id: 'one' },
+        };
+        await addCommand.confirm(button as unknown as Parameters<Add['confirm']>[0]);
+        const subs = records.get('user:guild:one') as Array<{ query: string }>;
+        expect(subs.some((sub) => sub.query === query)).toBe(true);
+        expect(button.editReply).toHaveBeenCalledTimes(1);
+    });
+
+    test('another user cannot consume a confirmation or replace its message', async () => {
+        records.set('confirmation:token', { guildId: 'guild', query: 'Alpha', userId: 'owner' });
+        const button = {
+            customId: 'subs:confirm:token',
+            deferUpdate: mock(),
+            editReply: mock(),
+            followUp: mock(),
+            guildId: 'guild',
+            user: { id: 'intruder' },
+        };
+        await addCommand.confirm(button as unknown as Parameters<Add['confirm']>[0]);
+        expect(button.editReply).not.toHaveBeenCalled();
+        expect(button.followUp).toHaveBeenCalledTimes(1);
+        expect(records.has('confirmation:token')).toBe(true);
+    });
+
+    test('notification buttons fit Unicode queries and resolve canonical subscriptions', async () => {
+        const query = `alpha ${'😀'.repeat(22)}`;
+        await create('one', query);
+        expect(
+            await notify.sendBatchedNotification(
+                notificationClient,
+                'channel',
+                ['one'],
+                release(9, 100),
+                query
+            )
+        ).toBe(true);
+        const container = send.mock.calls[0]?.[0].components[0].toJSON();
+        const id = container.components.at(-1).components[0].custom_id;
+        expect(id.length).toBeLessThanOrEqual(100);
+        expect(
+            (await subscriptions.unsubscribeFromQueryToken('one', 'guild', id.split(':')[3]))
+                .success
+        ).toBe(true);
+    });
+});

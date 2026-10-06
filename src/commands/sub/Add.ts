@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Category } from '@discordx/utilities';
 import {
     ApplicationCommandOptionType,
@@ -179,10 +180,13 @@ export class Add {
                     ].join('\n')
                 );
 
-                // Build compact customId
-                const encodedQuery = query.trim();
-                const qEnc = encodeURIComponent(encodedQuery);
-                const confirmId = `${guildId}:${userId}:${qEnc}`;
+                // Keep query text in expiring storage so every button fits Discord's ID limit.
+                const confirmId = randomUUID();
+                await keyv.set(
+                    `confirmation:${confirmId}`,
+                    { guildId, query, userId },
+                    15 * 60 * 1000
+                );
 
                 const continueBtn = new ButtonBuilder()
                     .setCustomId(`subs:confirm:${confirmId}`)
@@ -190,7 +194,7 @@ export class Add {
                     .setStyle(ButtonStyle.Success);
 
                 const cancelBtn = new ButtonBuilder()
-                    .setCustomId('subs:cancel')
+                    .setCustomId(`subs:cancel:${confirmId}`)
                     .setLabel('Cancel')
                     .setStyle(ButtonStyle.Secondary);
 
@@ -244,49 +248,32 @@ export class Add {
 
     @ButtonComponent({ id: /^subs:confirm:.+$/ })
     async confirm(interaction: ButtonInteraction) {
+        await interaction.deferUpdate();
         const parts = interaction.customId.split(':');
-        // Format: ['subs','confirm','<guildId>','<userId>','<qEnc>']
-        if (parts.length < 5) {
-            await interaction.update({
-                components: [
-                    new ContainerBuilder().addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent('❌ Invalid confirmation data.')
-                    ),
-                ],
-                flags: MessageFlags.IsComponentsV2,
+        const confirmationKey = `confirmation:${parts[2]}`;
+        // Existing short legacy buttons continue to work after an upgrade.
+        const state =
+            parts.length >= 5
+                ? {
+                      guildId: parts[2]!,
+                      query: decodeURIComponent(parts.slice(4).join(':')),
+                      userId: parts[3]!,
+                  }
+                : await keyv.get<{ guildId: string; userId: string; query: string }>(
+                      confirmationKey
+                  );
+        if (!state) {
+            await interaction.followUp({
+                content: '❌ This confirmation expired. Run /add again.',
+                flags: MessageFlags.Ephemeral,
             });
             return;
         }
-
-        const guildId = parts[2]!;
-        const userId = parts[3]!;
-        const qEnc = parts.slice(4).join(':');
-        const query = decodeURIComponent(qEnc);
-
-        // Verify ownership
-        if (userId !== interaction.user.id) {
-            await interaction.update({
-                components: [
-                    new ContainerBuilder().addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent(
-                            '❌ You can only confirm your own subscriptions.'
-                        )
-                    ),
-                ],
-                flags: MessageFlags.IsComponentsV2,
-            });
-            return;
-        }
-        if (interaction.guildId !== guildId) {
-            await interaction.update({
-                components: [
-                    new ContainerBuilder().addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent(
-                            '❌ This confirmation must be used in the same server.'
-                        )
-                    ),
-                ],
-                flags: MessageFlags.IsComponentsV2,
+        const { guildId, userId, query } = state;
+        if (userId !== interaction.user.id || interaction.guildId !== guildId) {
+            await interaction.followUp({
+                content: '❌ You can only confirm your own subscriptions in the same server.',
+                flags: MessageFlags.Ephemeral,
             });
             return;
         }
@@ -305,7 +292,7 @@ export class Add {
         });
 
         if (!result.success) {
-            await interaction.update({
+            await interaction.editReply({
                 components: [
                     new ContainerBuilder().addTextDisplayComponents(
                         new TextDisplayBuilder().setContent(result.message!)
@@ -315,6 +302,8 @@ export class Add {
             });
             return;
         }
+
+        await keyv.delete(confirmationKey);
 
         // Create success message using helper function
         const locationText = await this.getNotificationLocationText(interaction.guildId ?? null);
@@ -326,7 +315,7 @@ export class Add {
             locationText
         );
 
-        await interaction.update({
+        await interaction.editReply({
             components: [container],
             flags: MessageFlags.IsComponentsV2,
         });
@@ -414,8 +403,26 @@ export class Add {
         }
     }
 
-    @ButtonComponent({ id: 'subs:cancel' })
+    @ButtonComponent({ id: /^subs:cancel(?::.+)?$/ })
     async cancel(interaction: ButtonInteraction) {
+        const [, , token] = interaction.customId.split(':');
+        if (token) {
+            const state = await keyv.get<{ guildId: string; userId: string }>(
+                `confirmation:${token}`
+            );
+            if (
+                !state ||
+                state.userId !== interaction.user.id ||
+                state.guildId !== interaction.guildId
+            ) {
+                await interaction.reply({
+                    content: '❌ This confirmation expired or belongs to someone else.',
+                    flags: MessageFlags.Ephemeral,
+                });
+                return;
+            }
+            await keyv.delete(`confirmation:${token}`);
+        }
         const cancelText = new TextDisplayBuilder().setContent(
             [
                 '## ❌ **Subscription Cancelled**',

@@ -2,7 +2,7 @@ import { codeBlock, Events, MessageFlags } from 'discord.js';
 import { type ArgsOf, type Client, Discord, On } from 'discordx';
 import { config } from '../config/Config.js';
 import { log } from '../utils/Console.js';
-import { unsubscribeFromQuery } from '../utils/Subscriptions.js';
+import { unsubscribeFromQuery, unsubscribeFromQueryToken } from '../utils/Subscriptions.js';
 import {
     getTextChannel,
     handleError,
@@ -63,7 +63,7 @@ export class InteractionCreate {
 
                 await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-                if (!guildId) {
+                if (!guildId || (interaction.guildId && interaction.guildId !== guildId)) {
                     await PreWatchComponent(
                         interaction,
                         'Error',
@@ -73,7 +73,10 @@ export class InteractionCreate {
                     return;
                 }
 
-                const result = await unsubscribeFromQuery(userId, guildId, query);
+                const result =
+                    parts[1] === 'q' && parts.length === 3
+                        ? await unsubscribeFromQueryToken(userId, guildId, parts[2]!)
+                        : await unsubscribeFromQuery(userId, guildId, query);
 
                 await PreWatchComponent(
                     interaction,
