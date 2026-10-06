@@ -60,7 +60,7 @@ PreWatch is a Discord bot that monitors scene releases from the [PreDB](https://
 
 ## 🚀 Requirements
 
-- [Bun](https://bun.sh/) - Fast JavaScript runtime
+- [Bun v1.4.0](https://bun.sh/) - Fast JavaScript runtime tested in CI
 - [Discord Bot Application](https://discord.com/developers/applications) with bot token
 - Access to [Predb.ovh API](https://predb.club/api/v1) (default endpoint)
 
@@ -104,8 +104,36 @@ PreWatch is a Discord bot that monitors scene releases from the [PreDB](https://
 
 - `/add <query>` - Subscribe to a search query for release notifications
 - `/list` - View and manage your active subscriptions  
+- `/setalertschannel` - Choose this server's release alerts channel (Manage Server permission)
 - `/help` - Display all available commands
 - `/ping` - Check bot status and performance
+
+## Monitoring and Recovery
+
+The release stream reconnects automatically after connection failures, including when the API is unavailable during startup. HTTP requests and WebSocket handshakes have a 15-second timeout.
+
+Set `POLLING_ENABLED=true` to recover releases missed during an outage. Polling is disabled by default. `POLLING_INTERVAL_SECONDS` controls the base interval, and requests are paced at 30 per minute per cluster. Catch-up reads all pages back to the recovery boundary before advancing its cursor; incomplete requests and failed notifications are retried. A five-minute overlap accounts for delayed API indexing.
+
+Delivery receipts are stored for seven days so distinct releases with the same timestamp and out-of-order live events can be delivered independently. Subscription updates are serialized per guild and restored after a failed storage mutation. Storage recovery still depends on the database remaining available.
+
+Similar-query confirmations expire after 15 minutes. Notification unsubscribe buttons use compact query identifiers and continue to work across query case variants.
+
+## Development Checks
+
+Run the same checks used in CI:
+
+```bash
+bun install --frozen-lockfile
+bun run lint
+bun run test
+bun run audit
+```
+
+Tests use mocked Discord and API connections, temporary SQLite databases, and a local HTTP proxy. They do not log in to Discord or contact PreDB.
+
+Security overrides select patched `tar` and `@tootallnate/once` versions. Compatibility tests cover SQLite archive extraction, node-gyp's streaming extraction API, and HTTP proxy requests.
+
+The transitive `braces` v3.0.3 dependency has no upstream fix for [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm). The committed Bun patch rejects nesting at a depth of 128 in parsing, compilation, expansion, and stringification, including caller-provided ASTs. Regression tests verify the mitigation. `bun run audit` excludes only this locally patched advisory because registry scanners still identify the original package version. Retire the patch and exception when an upstream fixed version becomes available.
 
 ## 📸 Screenshots
 

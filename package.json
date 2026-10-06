@@ -10,11 +10,13 @@
     "url": "https://github.com/Valhalla-Development/ValkyrieCore/issues"
   },
   "scripts": {
-    "lint": "tsc --noEmit -p tsconfig.json && biome check --files-ignore-unknown=true --diagnostic-level=error --no-errors-on-unmatched src",
+    "lint": "bun run type-check && biome check --files-ignore-unknown=true --diagnostic-level=error --no-errors-on-unmatched src tests",
     "lint:fix": "biome check --write --no-errors-on-unmatched --files-ignore-unknown=true src",
     "dev": "NODE_ENV=development bun --watch src/Main.ts",
     "start": "NODE_ENV=production bun src/Cluster.ts",
-    "type-check": "tsc --noEmit -p tsconfig.json"
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "bun --no-env-file test",
+    "audit": "bun audit --ignore=GHSA-vfj7-8cjw-p6xm"
   },
   "dependencies": {
     "@discordx/importer": "^1.3.3",

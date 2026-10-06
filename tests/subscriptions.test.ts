@@ -148,7 +148,9 @@ function release(id: number, preAt: number) {
         url: '',
     };
 }
-const send = mock(async () => ({}));
+const send = mock((_payload: { components: import('discord.js').ContainerBuilder[] }) =>
+    Promise.resolve({})
+);
 const notificationClient = {
     ...client,
     channels: {
@@ -269,7 +271,7 @@ describe('compact subscription buttons', () => {
         };
         await addCommand.add(
             query,
-            interaction as unknown as Parameters<Add['add']>[1],
+            interaction as unknown as Parameters<typeof addCommand.add>[1],
             notificationClient
         );
         const payload = editReply.mock.calls[0]?.[0];
@@ -285,7 +287,7 @@ describe('compact subscription buttons', () => {
             guildId: 'guild',
             user: { id: 'one' },
         };
-        await addCommand.confirm(button as unknown as Parameters<Add['confirm']>[0]);
+        await addCommand.confirm(button as unknown as Parameters<typeof addCommand.confirm>[0]);
         const subs = records.get('user:guild:one') as Array<{ query: string }>;
         expect(subs.some((sub) => sub.query === query)).toBe(true);
         expect(button.editReply).toHaveBeenCalledTimes(1);
@@ -301,7 +303,7 @@ describe('compact subscription buttons', () => {
             guildId: 'guild',
             user: { id: 'intruder' },
         };
-        await addCommand.confirm(button as unknown as Parameters<Add['confirm']>[0]);
+        await addCommand.confirm(button as unknown as Parameters<typeof addCommand.confirm>[0]);
         expect(button.editReply).not.toHaveBeenCalled();
         expect(button.followUp).toHaveBeenCalledTimes(1);
         expect(records.has('confirmation:token')).toBe(true);
@@ -319,11 +321,16 @@ describe('compact subscription buttons', () => {
                 query
             )
         ).toBe(true);
-        const container = send.mock.calls[0]?.[0].components[0].toJSON();
-        const id = container.components.at(-1).components[0].custom_id;
+        const container = send.mock.calls[0]?.[0].components[0]?.toJSON();
+        const row = container?.components.find((component) => component.type === 1);
+        const button = row?.components[0];
+        if (!(button && 'custom_id' in button)) {
+            throw new Error('Expected an unsubscribe button');
+        }
+        const id = button.custom_id;
         expect(id.length).toBeLessThanOrEqual(100);
         expect(
-            (await subscriptions.unsubscribeFromQueryToken('one', 'guild', id.split(':')[3]))
+            (await subscriptions.unsubscribeFromQueryToken('one', 'guild', id.split(':')[3]!))
                 .success
         ).toBe(true);
     });

@@ -53,12 +53,21 @@ describe('dependency security compatibility', () => {
         const uri = `sqlite://${join(directory, 'test.sqlite')}`;
         let storage = new KeyvSqlite({ busyTimeout: 5000, uri });
         try {
-            let keyv = new Keyv({ namespace: 'data', store: storage, throwOnErrors: true });
+            let keyv = new Keyv<{ users: string[] }>({
+                namespace: 'data',
+                store: storage,
+                throwOnErrors: true,
+            });
             await keyv.set('subscription', { users: ['one', 'two'] });
             await storage.disconnect();
             storage = new KeyvSqlite({ busyTimeout: 5000, uri });
-            keyv = new Keyv({ namespace: 'data', store: storage, throwOnErrors: true });
-            expect(await keyv.get('subscription')).toEqual({ users: ['one', 'two'] });
+            keyv = new Keyv<{ users: string[] }>({
+                namespace: 'data',
+                store: storage,
+                throwOnErrors: true,
+            });
+            const restored = await keyv.get<{ users: string[] }>('subscription');
+            expect(restored?.users).toEqual(['one', 'two']);
         } finally {
             await storage.disconnect();
             await rm(directory, { recursive: true });
@@ -104,18 +113,23 @@ describe('dependency security compatibility', () => {
         if (!address || typeof address === 'string') {
             throw new Error('Expected a TCP listener');
         }
-        const agent = new HttpProxyAgent(`http://127.0.0.1:${address.port}`);
+        const agent = HttpProxyAgent(`http://127.0.0.1:${address.port}`);
         try {
             const body = await new Promise<string>((resolve, reject) => {
-                const request = get('http://example.invalid/test', { agent }, (response) => {
-                    let result = '';
-                    response.setEncoding('utf8');
-                    response.on('data', (chunk: string) => {
-                        result += chunk;
-                    });
-                    response.on('end', () => resolve(result));
-                    response.on('error', reject);
-                });
+                // The legacy agent implements Node's addRequest protocol without extending its Agent class.
+                const request = get(
+                    'http://example.invalid/test',
+                    { agent: agent as unknown as import('node:http').Agent },
+                    (response) => {
+                        let result = '';
+                        response.setEncoding('utf8');
+                        response.on('data', (chunk: string) => {
+                            result += chunk;
+                        });
+                        response.on('end', () => resolve(result));
+                        response.on('error', reject);
+                    }
+                );
                 request.on('error', reject);
                 request.setTimeout(2000, () =>
                     request.destroy(new Error('Proxy request timed out'))
