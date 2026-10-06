@@ -15,7 +15,7 @@ import { log } from '../../utils/Console.js';
 import { areWatchQueriesSimilar, isWatchQueryUsable, parseWatchQuery } from '../../utils/Match.js';
 import { keyv } from '../../utils/Store.js';
 import {
-    addQuerySubscriber,
+    createStoredSubscription,
     deleteSubscription,
     getAlertsChannelForGuild,
 } from '../../utils/Subscriptions.js';
@@ -40,29 +40,11 @@ export class Add {
         subscriptionId: string;
         userKey: string;
     }): Promise<{ success: boolean; message?: string; userSubs?: Subscription[] }> {
-        const { guildId, query, userId, subscriptionId, userKey } = data;
         try {
-            // Get existing user subscriptions
-            const userSubs: Subscription[] = (await keyv.get(userKey)) || [];
-
-            const limitMessage = this.subscriptionLimitMessage(userSubs.length);
-            if (limitMessage) {
-                return { message: limitMessage, success: false };
-            }
-
-            // Create new subscription
-            const newSub: Subscription = {
-                created: Date.now(),
-                id: subscriptionId,
-                query,
-            };
-
-            // Update user subscriptions
-            userSubs.push(newSub);
-            await keyv.set(userKey, userSubs);
-            await addQuerySubscriber(guildId, query, userId);
-
-            return { success: true, userSubs };
+            return await createStoredSubscription({
+                ...data,
+                limit: config.MAX_SUBSCRIPTIONS_PER_USER,
+            });
         } catch (error) {
             log.error('Failed to create subscription', error);
             return { message: '❌ Failed to add subscription. Try again later.', success: false };

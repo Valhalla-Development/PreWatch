@@ -33,8 +33,8 @@ export async function setLastSeenForGuildQuery(
 ): Promise<void> {
     const key = getLastSeenKey(guildId, query);
     const payload: LastSeen = { id: release.id, preAt: release.preAt };
-    lastSeenCache.set(key, payload);
     await keyv.set(key, payload);
+    lastSeenCache.set(key, payload);
 }
 
 export async function seedLastSeenIfAbsent(
@@ -48,8 +48,8 @@ export async function seedLastSeenIfAbsent(
     }
     const key = getLastSeenKey(guildId, query);
     const payload: LastSeen = { preAt };
-    lastSeenCache.set(key, payload);
     await keyv.set(key, payload);
+    lastSeenCache.set(key, payload);
 }
 
 const lastSeenLocks = new Map<string, Promise<void>>();
@@ -335,17 +335,21 @@ export async function getAllActiveSubscriptions(client: Client): Promise<ActiveS
     return guildSubscriptions.flat();
 }
 
-export async function addToGlobalQueries(guildId: string, query: string): Promise<void> {
+async function addToGlobalQueries(guildId: string, query: string): Promise<void> {
     const allQueriesKey = `meta:all_queries:${guildId}`;
     const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
 
-    if (!allQueries.includes(query)) {
+    if (
+        !allQueries.some(
+            (existing) => normalizeQueryStorageKey(existing) === normalizeQueryStorageKey(query)
+        )
+    ) {
         allQueries.push(query);
         await keyv.set(allQueriesKey, allQueries);
     }
 }
 
-export async function addQuerySubscriber(
+async function addQuerySubscriberUnlocked(
     guildId: string,
     query: string,
     userId: string
@@ -357,15 +361,17 @@ export async function addQuerySubscriber(
         await keyv.set(queryKey, queryUsers);
         await addToGlobalQueries(guildId, query);
     }
-    indexAddUser(guildId, query, userId);
     await seedLastSeenIfAbsent(guildId, query, Math.floor(Date.now() / 1000));
+    indexAddUser(guildId, query, userId);
 }
 
-export async function removeFromGlobalQueries(guildId: string, query: string): Promise<void> {
+async function removeFromGlobalQueries(guildId: string, query: string): Promise<void> {
     const allQueriesKey = `meta:all_queries:${guildId}`;
     const allQueries: string[] = (await keyv.get(allQueriesKey)) || [];
 
-    const updatedQueries = allQueries.filter((q) => q !== query);
+    const updatedQueries = allQueries.filter(
+        (q) => normalizeQueryStorageKey(q) !== normalizeQueryStorageKey(query)
+    );
 
     if (updatedQueries.length === 0) {
         await keyv.delete(allQueriesKey);
@@ -387,7 +393,9 @@ export async function unsubscribeFromQuery(
         const userSubs: Array<{ id: string; query: string; created: number }> =
             (await keyv.get(userKey)) || [];
 
-        const matchingSubs = userSubs.filter((sub) => sub.query === query);
+        const matchingSubs = userSubs.filter(
+            (sub) => normalizeQueryStorageKey(sub.query) === normalizeQueryStorageKey(query)
+        );
         if (matchingSubs.length === 0) {
             return { message: '❌ You are not subscribed to this query.', success: false };
         }
@@ -408,6 +416,153 @@ export async function unsubscribeFromQuery(
     }
 }
 
+async function deleteSubscriptionUnlocked(
+    guildId: string,
+    userId: string,
+    subscriptionId: string
+): Promise<{
+    success: boolean;
+    message?: string;
+    deletedQuery?: string;
+}> {
+    const userKey = `user:${guildId}:${userId}`;
+    const userSubs: Array<{ id: string; query: string; created: number }> =
+        (await keyv.get(userKey)) || [];
+
+    const subToDelete = userSubs.find((sub) => sub.id === subscriptionId);
+    if (!subToDelete) {
+        return { message: '❌ Subscription not found.', success: false };
+    }
+
+    const updatedUserSubs = userSubs.filter((sub) => sub.id !== subscriptionId);
+
+    if (updatedUserSubs.length === 0) {
+        await keyv.delete(userKey);
+    } else {
+        await keyv.set(userKey, updatedUserSubs);
+    }
+
+    const queryKey = `query:${guildId}:${normalizeQueryStorageKey(subToDelete.query)}`;
+    const queryUsers: string[] = (await keyv.get(queryKey)) || [];
+    const stillSubscribed = updatedUserSubs.some(
+        (sub) => normalizeQueryStorageKey(sub.query) === normalizeQueryStorageKey(subToDelete.query)
+    );
+    const updatedQueryUsers = stillSubscribed
+        ? queryUsers
+        : queryUsers.filter((id) => id !== userId);
+
+    if (updatedQueryUsers.length === 0) {
+        await keyv.delete(queryKey);
+        await removeFromGlobalQueries(guildId, subToDelete.query);
+    } else {
+        await keyv.set(queryKey, updatedQueryUsers);
+    }
+
+    if (!stillSubscribed) {
+        indexRemoveUser(guildId, subToDelete.query, userId);
+    }
+
+    return {
+        deletedQuery: subToDelete.query,
+        message: `✅ Stopped monitoring "${subToDelete.query}"`,
+        success: true,
+    };
+}
+
+const subscriptionLocks = new Map<string, Promise<void>>();
+
+// Discord routes a guild to one cluster. Serialize its related storage mutations there.
+function withSubscriptionLock<T>(guildId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = subscriptionLocks.get(guildId) ?? Promise.resolve();
+    const run = previous.then(fn);
+    const settled = run.then(
+        () => undefined,
+        () => undefined
+    );
+    subscriptionLocks.set(guildId, settled);
+    settled.then(() => {
+        if (subscriptionLocks.get(guildId) === settled) {
+            subscriptionLocks.delete(guildId);
+        }
+    });
+    return run;
+}
+
+// Keyv has no multi-key transaction API. Restore the original records on a failed mutation.
+async function withSubscriptionRollback<T>(keys: string[], fn: () => Promise<T>): Promise<T> {
+    const originals = await Promise.all(keys.map((key) => keyv.get(key)));
+    try {
+        return await fn();
+    } catch (error) {
+        await Promise.all(
+            keys.map(async (key, index) => {
+                lastSeenCache.delete(key);
+                if (originals[index] === undefined) {
+                    await keyv.delete(key);
+                } else {
+                    await keyv.set(key, originals[index]);
+                }
+            })
+        );
+        throw error;
+    }
+}
+
+function subscriptionKeys(guildId: string, query: string, userId?: string): string[] {
+    return [
+        ...(userId ? [`user:${guildId}:${userId}`] : []),
+        `query:${guildId}:${normalizeQueryStorageKey(query)}`,
+        `meta:all_queries:${guildId}`,
+    ];
+}
+
+export interface StoredSubscription {
+    created: number;
+    id: string;
+    query: string;
+}
+
+export function createStoredSubscription(data: {
+    guildId: string;
+    query: string;
+    userId: string;
+    subscriptionId: string;
+    limit: number;
+}): Promise<{ success: boolean; message?: string; userSubs?: StoredSubscription[] }> {
+    const { guildId, query, userId, subscriptionId, limit } = data;
+    return withSubscriptionLock(guildId, async () => {
+        const userKey = `user:${guildId}:${userId}`;
+        const userSubs: StoredSubscription[] = (await keyv.get(userKey)) || [];
+        if (
+            userSubs.some(
+                (sub) => normalizeQueryStorageKey(sub.query) === normalizeQueryStorageKey(query)
+            )
+        ) {
+            return { message: `❌ You're already monitoring "${query}"`, success: false };
+        }
+        if (limit > 0 && userSubs.length >= limit) {
+            return {
+                message: `❌ Maximum ${limit} subscriptions per user. Remove some first.`,
+                success: false,
+            };
+        }
+        return withSubscriptionRollback(subscriptionKeys(guildId, query, userId), async () => {
+            const updated = [...userSubs, { created: Date.now(), id: subscriptionId, query }];
+            await keyv.set(userKey, updated);
+            await addQuerySubscriberUnlocked(guildId, query, userId);
+            return { success: true, userSubs: updated };
+        });
+    });
+}
+
+export function addQuerySubscriber(guildId: string, query: string, userId: string): Promise<void> {
+    return withSubscriptionLock(guildId, () =>
+        withSubscriptionRollback(subscriptionKeys(guildId, query), () =>
+            addQuerySubscriberUnlocked(guildId, query, userId)
+        )
+    );
+}
+
 export async function deleteSubscription(
     guildId: string,
     userId: string,
@@ -418,41 +573,16 @@ export async function deleteSubscription(
     deletedQuery?: string;
 }> {
     try {
-        const userKey = `user:${guildId}:${userId}`;
-        const userSubs: Array<{ id: string; query: string; created: number }> =
-            (await keyv.get(userKey)) || [];
-
-        const subToDelete = userSubs.find((sub) => sub.id === subscriptionId);
-        if (!subToDelete) {
-            return { message: '❌ Subscription not found.', success: false };
-        }
-
-        const updatedUserSubs = userSubs.filter((sub) => sub.id !== subscriptionId);
-
-        if (updatedUserSubs.length === 0) {
-            await keyv.delete(userKey);
-        } else {
-            await keyv.set(userKey, updatedUserSubs);
-        }
-
-        const queryKey = `query:${guildId}:${normalizeQueryStorageKey(subToDelete.query)}`;
-        const queryUsers: string[] = (await keyv.get(queryKey)) || [];
-        const updatedQueryUsers = queryUsers.filter((id) => id !== userId);
-
-        if (updatedQueryUsers.length === 0) {
-            await keyv.delete(queryKey);
-            await removeFromGlobalQueries(guildId, subToDelete.query);
-        } else {
-            await keyv.set(queryKey, updatedQueryUsers);
-        }
-
-        indexRemoveUser(guildId, subToDelete.query, userId);
-
-        return {
-            deletedQuery: subToDelete.query,
-            message: `✅ Stopped monitoring "${subToDelete.query}"`,
-            success: true,
-        };
+        return await withSubscriptionLock(guildId, async () => {
+            const subs: StoredSubscription[] = (await keyv.get(`user:${guildId}:${userId}`)) || [];
+            const sub = subs.find((entry) => entry.id === subscriptionId);
+            if (!sub) {
+                return { message: '❌ Subscription not found.', success: false };
+            }
+            return withSubscriptionRollback(subscriptionKeys(guildId, sub.query, userId), () =>
+                deleteSubscriptionUnlocked(guildId, userId, subscriptionId)
+            );
+        });
     } catch (error) {
         log.error('Failed to delete subscription', error);
         return { message: '❌ Failed to delete subscription. Try again later.', success: false };
