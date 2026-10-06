@@ -102,8 +102,8 @@ export class SetAlertsChannel {
         const me =
             resolvedChannel.guild.members.me ?? (await resolvedChannel.guild.members.fetchMe());
         const perms = resolvedChannel.permissionsFor(me);
-        const canView = perms?.has(PermissionFlagsBits.ViewChannel) ?? false;
-        const canSend = perms?.has(PermissionFlagsBits.SendMessages) ?? false;
+        const canView = perms.has(PermissionFlagsBits.ViewChannel);
+        const canSend = perms.has(PermissionFlagsBits.SendMessages);
         const hasRequiredPerms = canView && canSend;
         if (!hasRequiredPerms) {
             const container = new ContainerBuilder().addTextDisplayComponents(
